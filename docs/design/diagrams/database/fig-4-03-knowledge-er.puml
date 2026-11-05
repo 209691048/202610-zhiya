@@ -1,0 +1,45 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam dpi 220
+skinparam shadowing false
+skinparam monochrome true
+skinparam classAttributeIconSize 0
+skinparam nodesep 45
+skinparam ranksep 55
+skinparam padding 6
+skinparam linetype polyline
+hide empty members
+hide circle
+
+left to right direction
+entity reading_sessions {
+ * id <<PK>>
+ version_id <<FK>>
+}
+entity interaction_events {
+ * id <<PK>>
+ session_id / version_id <<FK>>
+ event_type / request_key
+}
+entity event_evidence {
+ * event_id <<PK,FK>>
+ * knowledge_item_id <<PK,FK>>
+ rank_no
+}
+entity knowledge_items {
+ * id <<PK>>
+ item_key / version_no <<UQ>>
+ source_title / source_ref
+ locator / status
+}
+reading_sessions ||--o{ interaction_events
+interaction_events ||--o{ event_evidence
+knowledge_items ||--o{ event_evidence
+note bottom of event_evidence
+  只关联实际引用的知识版本。
+  UQ(event_id, rank_no)确保引用顺序。
+end note
+
+@enduml

@@ -1,0 +1,58 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+hide footbox
+skinparam maxMessageSize 260
+skinparam BoxPadding 8
+participant "家长页面" as UI
+participant "内容服务" as B
+database "数据访问" as R
+participant "会话服务" as S
+UI -> B : story-generations(源会话、revision)
+B -> B : 固定本人亲子会话快照\n生成、校验及保存草稿
+B --> UI : 草稿与continuation
+UI -> B : approvals(versionNumber)
+B -> R : 审核并冻结页面、分支和继续点
+B --> UI : 已私有审核；旧会话不变
+UI -> S : reading-sessions\n目标版本、源会话、revision、请求键
+S -> R : switch_continuation()
+group 单短事务；不调用模型
+ R -> R : 核验身份与归属\n查询创建幂等记录
+ alt 同键成功且内容相同
+  R --> S : 200 原新会话
+ else 幂等冲突或新请求切换条件不满足
+  R --> S : 409；旧会话不变
+ else 允许切换
+  R -> R : 旧会话FINISHED(CONTINUED)\n新会话IN_PROGRESS、STARTED\n保存小结、来源与响应
+  alt 提交成功
+   R --> S : 201；从resumePageNumber开始
+  else 写入失败
+   R --> S : 整体回滚，503
+  end
+ end
+end
+S --> UI : 新会话 / 原结果 / 明确错误
+note over UI,S
+本期 P1 有限续写；验收 TC-FR17-04～05。
+仅成功后切换页面；丢响应以原clientRequestId和请求体重发。
+源版本、revision和实际路径必须仍与审核快照一致。
+end note
+
+@enduml

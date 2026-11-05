@@ -1,0 +1,48 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowColor #334155
+skinparam ArrowThickness 1.3
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam packageTitleAlignment left
+skinparam linetype spline
+skinparam nodesep 65
+skinparam ranksep 60
+skinparam padding 6
+skinparam defaultTextAlignment center
+skinparam monochrome true
+hide empty members
+skinparam nodesep 32
+skinparam ranksep 40
+left to right direction
+actor "家长" as P
+actor "内容管理员" as A
+rectangle "知芽 Web 系统" {
+ usecase "UC-06\n生成并续写原创绘本" as U6
+ usecase "生成原创草稿" as GEN
+ usecase "内容与结构校验" as VALID
+ usecase "家长审核故事\n与全部分支" as REVIEW
+ usecase "保存并再次阅读" as SAVE
+ usecase "UC-03 管理资源" as U3
+ usecase "审核并发布绘本" as PUB
+ usecase "维护领域知识\n及来源" as KNOW
+ usecase "撤回内容" as REVOKE
+}
+P -- U6
+P -- REVIEW
+P -- SAVE
+U6 ..> GEN : <<include>>
+GEN ..> VALID : <<include>>
+A -- U3
+A -- PUB
+A -- KNOW
+A -- REVOKE
+PUB ..> VALID : <<include>>
+
+@enduml

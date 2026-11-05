@@ -1,0 +1,58 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+start
+partition "家长与业务后端" {
+ :校验档案归属与绘本可读性;
+ if (允许开始?) then (是)
+  :创建会话并配置授权；提交STARTED进入IN_PROGRESS;
+ else (否)
+  :返回原因，不进入阅读;
+  stop
+ endif
+}
+partition "阅读页面与业务后端" {
+ while (会话有效、未到时且内容可用?) is (是)
+  :显示已审核当前页；按需请求INITIAL问题;
+  if (主动结束?) then (是)
+   :提交完成请求;
+   break
+  else (否)
+  endif
+  if (需要问答或引导?) then (是)
+   :按图5-5／5-7处理；只展示已保存结果;
+  else (否)
+  endif
+  if (选择前进或回退?) then (是)
+   :普通翻页用events；决策页前进用branches;
+   :校验并原子提交（详见图5-6及第6.11节）;
+   if (提交成功?) then (是)
+    :停止旧音频，显示服务端确认页;
+   else (否)
+    :保留原页；冲突刷新，断网提示重连;
+   endif
+  else (否)
+  endif
+ endwhile (否)
+ :按真实原因保存终态与反馈；停止播放\n儿童模式保持儿童凭证;
+}
+stop
+
+@enduml

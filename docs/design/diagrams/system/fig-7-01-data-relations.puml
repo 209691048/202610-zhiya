@@ -1,0 +1,69 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam dpi 220
+skinparam shadowing false
+skinparam monochrome true
+skinparam classAttributeIconSize 0
+skinparam nodesep 45
+skinparam ranksep 55
+skinparam padding 6
+skinparam linetype polyline
+hide empty members
+hide circle
+
+top to bottom direction
+entity accounts {
+ * id <<PK>>
+ role
+}
+entity child_profiles {
+ * id <<PK>>
+ * guardian_id <<FK>>
+}
+entity storybooks {
+ * id <<PK>>
+ owner_guardian_id <<FK>>
+}
+entity story_versions {
+ * id <<PK>>
+ * storybook_id <<FK>>
+ version_no
+}
+entity story_pages {
+ * version_id <<PK,FK>>
+ * page_no <<PK>>
+ default_next_page_number
+}
+entity story_branches {
+ * id <<PK>>
+ * version_id <<FK>>
+ from_page_no / next_page_no
+}
+entity reading_sessions {
+ * id <<PK>>
+ * profile_id <<FK>>
+ * version_id <<FK>>
+ revision / visited_pages_json
+}
+entity interaction_events {
+ * id <<PK>>
+ * session_id / version_id <<FK>>
+ request_key / page_no
+}
+entity reading_reports {
+ * session_id <<PK,FK>>
+ status
+}
+accounts ||-right-o{ child_profiles
+accounts |o-down-o{ storybooks
+storybooks ||-down-o{ story_versions
+story_versions ||-left-o{ story_pages
+story_versions ||-down-o{ story_branches
+child_profiles ||-down-o{ reading_sessions
+story_versions ||-right-o{ reading_sessions
+reading_sessions ||-down-o{ interaction_events
+reading_sessions ||-right-o| reading_reports
+
+@enduml

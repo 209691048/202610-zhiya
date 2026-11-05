@@ -1,0 +1,58 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+start
+partition "家长" {
+ :提供主题、角色与场景；选择普通原创或续写;
+}
+partition "领域智能体与业务后端" {
+ :校验输入与预算；续写固定源会话快照;
+ :检索适龄规则与合法素材，生成故事草稿;
+ :校验全书4至6页、无环、路径可达且长4至6页\n核验人物、情节、安全与来源;
+ if (包含受控分支?) then (是)
+  :另验1至2个决策节点，每节点至少2个选项;
+ else (否)
+ endif
+ if (全部检查通过?) then (是)
+  :保存PENDING_REVIEW\n检查结果及续写继续点;
+ else (否)
+  :标记CHECK_FAILED\n不提供儿童阅读入口;
+  stop
+ endif
+}
+partition "家长" {
+ :逐页、逐分支预览；续写同时确认继续点;
+ if (确认该版本?) then (确认并提交)
+ else (否)
+  :修改或重新生成草稿;
+  stop
+ endif
+}
+partition "业务后端" {
+ :复核版本、归属与全部检查结果;
+ if (仍允许批准?) then (是)
+  :置为APPROVED_PRIVATE并保存书架\n普通阅读新建会话；续写按图5-11切换;
+ else (否)
+  :拒绝批准并说明原因，原状态不变;
+ endif
+}
+stop
+
+@enduml

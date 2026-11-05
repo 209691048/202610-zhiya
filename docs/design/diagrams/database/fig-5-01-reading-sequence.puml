@@ -1,0 +1,41 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam dpi 220
+skinparam shadowing false
+skinparam monochrome true
+skinparam classAttributeIconSize 0
+skinparam nodesep 45
+skinparam ranksep 55
+skinparam padding 6
+skinparam linetype polyline
+hide empty members
+hide circle
+
+participant "家长或受限儿童" as U
+participant "阅读服务" as S
+database "SQLite" as D
+participant "ReadingAgent" as A
+U -> S : 创建 / STARTED（分别提交）
+S -> D : 短事务校验归属、固定version_id\n创建CREATED；STARTED转IN_PROGRESS
+D --> S : 会话、当前页、revision
+S --> U : 已提交状态
+U -> S : 提问 / 反馈 + clientEventId\n+ expectedRevision
+S -> D : 短事务验权限、旧键重放\n新键占位RUNNING后提交
+alt 本请求取得执行权且需要模型
+ S -> A : 事务外生成、检索与安全校验
+ A --> S : 安全结果与实际引用
+ S -> D : 短事务复核权限、revision、执行令牌\n事件、引用、进度、响应原子提交
+else 已处理或无需模型
+ S -> D : 重放旧响应或同事务完成纯事件
+end
+S --> U : 已保存结果 / 处理中 / 明确错误
+U -> S : 完成阅读
+S -> D : 短事务写FINISHED及事实记录\n创建PENDING小结
+S --> U : 事实记录可立即读取
+S -> A : 事务外生成可选阅读小结
+A --> S : 成功结果或失败
+S -> D : 条件更新READY / FAILED\n禁止覆盖已READY小结
+
+@enduml

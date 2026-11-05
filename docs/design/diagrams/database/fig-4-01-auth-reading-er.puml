@@ -1,0 +1,62 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam dpi 220
+skinparam shadowing false
+skinparam monochrome true
+skinparam classAttributeIconSize 0
+skinparam nodesep 45
+skinparam ranksep 55
+skinparam padding 6
+skinparam linetype polyline
+hide empty members
+hide circle
+
+top to bottom direction
+entity accounts {
+ * id <<PK>>
+ role
+}
+entity auth_sessions {
+ * id <<PK>>
+ account_id <<FK>>
+ revoked_at
+}
+entity child_profiles {
+ * id <<PK>>
+ guardian_id <<FK>>
+}
+entity child_grants {
+ * id <<PK>>
+ profile_id <<FK>>
+ issued_by_session_id <<FK,UQ>>
+ expires_at / revoked_at
+}
+entity child_grant_books {
+ * grant_id <<PK,FK>>
+ * version_id <<PK,FK>>
+}
+entity reading_sessions {
+ * id <<PK>>
+ profile_id / grant_id <<FK>>
+ version_id <<FK>>
+}
+entity request_executions {
+ * id <<PK>>
+ owner_account_id <<FK>>
+ session_id <<FK>>
+ scope_type / scope_id
+ client_request_id
+}
+accounts ||--o{ auth_sessions
+auth_sessions ||--o| child_grants
+accounts ||--o{ child_profiles
+child_profiles ||--o{ child_grants
+child_grants ||--|{ child_grant_books
+child_profiles ||--o{ reading_sessions
+child_grants |o--o{ reading_sessions
+accounts ||--o{ request_executions
+reading_sessions |o--o{ request_executions
+
+@enduml

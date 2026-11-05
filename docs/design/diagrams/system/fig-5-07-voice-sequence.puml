@@ -1,0 +1,59 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+hide footbox
+skinparam maxMessageSize 260
+skinparam BoxPadding 8
+participant "语音页面" as UI
+participant "语音服务" as V
+participant "识别服务" as ASR
+participant "会话服务" as S
+participant "合成服务" as TTS
+UI -> V : transcriptions(音频、会话、页码、revision)
+V -> V : 验权并检查时长、格式和大小
+alt 无录音、拒绝授权或输入不合法
+ V --> UI : 明确错误；文字或按钮入口
+else 检查通过
+ V -> ASR : 识别临时音频
+ ASR --> V : 真实转写或失败
+ V -> V : 清理音频，复核会话
+ V --> UI : text、status、reliable / 422 / 409
+end
+opt 文本可靠且允许提交
+ UI -> UI : 家长确认文本；儿童用受限候选
+ UI -> S : questions(text、会话上下文)
+ note right of S : 问答与保存见图5-5
+ S --> UI : 已保存AgentResult / 错误
+ opt 答案已核验并保存
+  UI -> V : syntheses(interactionEventId)
+  V -> V : 复核归属、当前页与有效期
+  opt 合成仍获授权
+   V -> TTS : 合成已核验文字
+   TTS --> V : 音频或失败
+  end
+  V --> UI : 201音频 / 503文字 / 权限或状态错误
+ end
+end
+note over UI,TTS
+识别失败或不可靠时重说／按钮；不伪造转写。
+拒绝麦克风可用文字；未保存或已过时的答案不播放。
+end note
+
+@enduml

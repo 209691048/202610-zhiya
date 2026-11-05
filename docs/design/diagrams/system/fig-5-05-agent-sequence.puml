@@ -1,0 +1,60 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+hide footbox
+skinparam maxMessageSize 260
+skinparam BoxPadding 8
+participant "阅读页面" as UI
+participant "会话服务" as S
+participant "阅读智能体" as A
+database "数据访问" as R
+UI -> S : questions / guidance\n页码、revision、请求键
+alt feedback=SKIPPED
+ S -> R : 单短事务：验权、查重、保存跳过与响应
+ R --> S : 原子递增revision；成功或错误
+ S --> UI : SKIP / 重放结果 / 错误
+else 问答或生成引导（含INITIAL）
+ ref over S,R
+  图5-10：核验并取得唯一执行权
+ end ref
+ alt 未取得执行权
+  S --> UI : 原成功／错误响应，或处理中提示
+ else 取得执行权
+  S -> A : ask(context,text) / guide(context,feedback)
+  ref over A
+   图5-9：输入、检索、生成、输出校验
+  end ref
+  A --> S : 已核验结果或安全回退
+  S -> R : commit_event_and_response()\n复核授权、revision及执行权
+  alt 提交成功
+   R --> S : 事件、revision、SUCCEEDED
+   S --> UI : 201 已保存结果
+  else 状态变化或保存失败
+   R --> S : 409 / 503；业务变更回滚
+   S --> UI : 不播放；按第6.17节恢复
+  end
+ end
+end
+note over S,R
+INITIAL不需要既往反馈；SKIPPED不调用Agent。
+模型调用期间不持数据库写锁。
+end note
+
+@enduml

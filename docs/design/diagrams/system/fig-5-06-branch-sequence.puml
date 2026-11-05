@@ -1,0 +1,56 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowThickness 1.3
+skinparam monochrome true
+skinparam padding 3
+skinparam defaultTextAlignment center
+hide empty members
+<style>
+activityDiagram {
+ activity {
+  Padding 2
+ }
+}
+</style>
+hide footbox
+skinparam maxMessageSize 260
+skinparam BoxPadding 8
+participant "阅读页面" as UI
+participant "分支服务" as B
+database "数据访问" as R
+UI -> B : POST branches\nbranchId、revision、请求键
+B -> R : commit_branch()
+group 单短事务：验权、查重、条件更新
+ R -> R : 核验归属、时限与内容状态
+ alt 未授权／到时／撤回
+  R --> B : 401 / 403 / 404 / 409
+ else 同键已成功且内容相同
+  R --> B : 200 原响应
+ else 同键内容不同
+  R --> B : 409 幂等冲突
+ else 新请求
+  R -> R : 校验当前节点、审核状态与选项
+  alt 选项不合法
+   R --> B : 422；保持原页
+  else revision不匹配
+   R --> B : 409；不提交
+  else 校验通过
+   R -> R : 原子写路径、页码、revision、事件及响应
+   R --> B : 201 新页；写失败全部回滚并返回503
+  end
+ end
+end
+B --> UI : 已确认新页 / 重放 / 明确错误
+UI -> UI : 成功才停止旧音频并切页
+note over B,R
+不调用模型；幂等重放先于旧revision冲突判断。
+任何重放仍须通过身份与资源权限检查。
+end note
+
+@enduml

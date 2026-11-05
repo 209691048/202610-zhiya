@@ -1,0 +1,58 @@
+@startuml
+' ZHIYA v1.1 | 2026-11-04 | local PlantUML / Graphviz
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam dpi 220
+skinparam ArrowColor #334155
+skinparam ArrowThickness 1.3
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam packageTitleAlignment left
+skinparam linetype polyline
+skinparam nodesep 65
+skinparam ranksep 60
+skinparam padding 6
+skinparam defaultTextAlignment center
+skinparam monochrome true
+hide empty members
+skinparam nodesep 20
+skinparam ranksep 12
+top to bottom direction
+actor "家长" as P1
+actor "幼儿\n受家长授权" as C1
+actor "家长" as P2
+actor "幼儿\n受家长授权" as C2
+rectangle "知芽 Web 系统" {
+ usecase "UC-01 开始共读\n扩展点：决策节点" as U1
+ usecase "UC-02 语音提问" as U2
+ usecase "UC-04 完成阅读" as U4
+ usecase "UC-05 儿童自主阅读\n扩展点：决策节点" as U5
+ usecase "保存阅读记录" as SAVE
+ usecase "故事范围与时限校验" as CHECK
+ usecase "选择已审核分支" as BRANCH
+}
+P1 -right- U1
+P1 -right- U5
+C1 -right- U5
+P2 -right- U2
+P2 -right- U4
+C2 -left- U2
+C2 -left- U4
+U4 .left.> SAVE : <<include>>
+U5 .down.> CHECK : <<include>>
+BRANCH .up.> U1 : <<extend>>\n[到达决策节点]
+BRANCH .left.> U5 : <<extend>>\n[到达决策节点]
+U1 -[hidden]down- U5
+U5 -[hidden]down- U2
+U2 -[hidden]down- U4
+P1 -[hidden]down- C1
+C1 -[hidden]down- P2
+skinparam legendFontSize 17
+legend bottom
+同名参与者表示同一角色，按用例组重复显示。
+endlegend
+
+@enduml

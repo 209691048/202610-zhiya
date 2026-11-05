@@ -1,0 +1,68 @@
+@startuml
+skinparam backgroundColor white
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 17
+skinparam dpi 220
+skinparam shadowing false
+skinparam monochrome true
+skinparam classAttributeIconSize 0
+skinparam nodesep 45
+skinparam ranksep 55
+skinparam padding 6
+skinparam linetype polyline
+hide empty members
+hide circle
+
+top to bottom direction
+class Account {
+ +accountId: Integer
+ +role: AccountRole
+}
+class ChildProfile {
+ +childProfileId: Integer
+ +ageBand: String
+}
+class Storybook {
+ +storybookId: Integer
+ +sourceType: String
+}
+class StoryVersion {
+ +storyVersionId: Integer
+ +versionNumber: Integer
+ +status: VersionStatus
+}
+class ReadingSession {
+ +readingSessionId: Integer
+ +mode: ReadingMode
+ +currentPage: Integer
+ +revision: Integer
+ +visitedPageNumbers: List
+}
+class StoryPage {
+ +pageNumber: Integer
+ +defaultNextPageNumber: Integer [0..1]
+}
+class StoryBranch {
+ +branchId: Integer
+ +fromPageNumber: Integer
+ +nextPageNumber: Integer
+}
+class InteractionEvent {
+ +interactionEventId: Integer
+ +clientEventId: String
+ +eventType: EventType
+}
+class ReadingReport {
+ +readingSessionId: Integer
+ +status: ReportStatus
+}
+Account "1" -right- "0..*" ChildProfile : 管理
+ChildProfile "1" -down- "0..*" ReadingSession
+Storybook "1" *-down- "0..*" StoryVersion
+ReadingSession "0..*" -down- "1" StoryVersion : 固定版本
+StoryVersion "1" *-down- "0..*" StoryPage
+StoryVersion "1" *-down- "0..*" StoryBranch
+ReadingSession "1" *-down- "0..*" InteractionEvent
+ReadingSession "1" *-down- "0..1" ReadingReport
+
+@enduml
