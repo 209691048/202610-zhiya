@@ -4,7 +4,7 @@
 
 | 版本 | 链接 |
 |---|---|
-| HTML 后台在线预览 | [打开 HTML 原型](https://raw.githack.com/MumLauds/202610-zhiya/main/prototype/admin-html/index.html) |
+| HTML 后台在线预览 | [打开 HTML 原型](https://htmlpreview.github.io/?https://github.com/MumLauds/202610-zhiya/blob/main/prototype/admin-html/index.html) |
 | HTML 后台源码 | [打开 index.html](./index.html) |
 | Figma 后台插件 | [打开插件目录](./figma-plugin/) |
 | Figma 插件 manifest | [打开 manifest.json](./figma-plugin/manifest.json) |

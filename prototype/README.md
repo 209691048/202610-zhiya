@@ -19,7 +19,7 @@
 
 ## 后台管理原型
 
-- [HTML 后台在线预览](https://raw.githack.com/MumLauds/202610-zhiya/main/prototype/admin-html/index.html)
+- [HTML 后台在线预览](https://htmlpreview.github.io/?https://github.com/MumLauds/202610-zhiya/blob/main/prototype/admin-html/index.html)
 - [HTML 后台源码](./admin-html/index.html)
 - [Figma 后台插件](./admin-html/figma-plugin/)
 - [Figma 插件 manifest](./admin-html/figma-plugin/manifest.json)
