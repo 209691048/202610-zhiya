@@ -39,7 +39,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b002.jpg",
+      "cover": "assets/covers/b002.png",
       "pages": [
         {
           "page": 1,
@@ -108,7 +108,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b003.jpg",
+      "cover": "assets/covers/b003.png",
       "pages": [
         {
           "page": 1,
@@ -177,7 +177,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b004.jpg",
+      "cover": "assets/covers/b004.png",
       "pages": [
         {
           "page": 1,
@@ -238,7 +238,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b005.jpg",
+      "cover": "assets/covers/b005.png",
       "pages": [
         {
           "page": 1,
@@ -307,7 +307,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b006.jpg",
+      "cover": "assets/covers/b006.png",
       "pages": [
         {
           "page": 1,
@@ -376,7 +376,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b007.jpg",
+      "cover": "assets/covers/b007.png",
       "pages": [
         {
           "page": 1,
@@ -437,7 +437,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b008.jpg",
+      "cover": "assets/covers/b008.png",
       "pages": [
         {
           "page": 1,
@@ -498,7 +498,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b009.jpg",
+      "cover": "assets/covers/b009.png",
       "pages": [
         {
           "page": 1,
@@ -559,7 +559,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b010.jpg",
+      "cover": "assets/covers/b010.png",
       "pages": [
         {
           "page": 1,
@@ -619,7 +619,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b011.jpg",
+      "cover": "assets/covers/b011.png",
       "pages": [
         {
           "page": 1,
@@ -680,7 +680,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b012.jpg",
+      "cover": "assets/covers/b012.png",
       "pages": [
         {
           "page": 1,
@@ -741,7 +741,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b013.jpg",
+      "cover": "assets/covers/b013.png",
       "pages": [
         {
           "page": 1,
@@ -802,7 +802,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b014.jpg",
+      "cover": "assets/covers/b014.png",
       "pages": [
         {
           "page": 1,
@@ -863,7 +863,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b015.jpg",
+      "cover": "assets/covers/b015.png",
       "pages": [
         {
           "page": 1,
@@ -924,7 +924,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b016.jpg",
+      "cover": "assets/covers/b016.png",
       "pages": [
         {
           "page": 1,
@@ -985,7 +985,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b017.jpg",
+      "cover": "assets/covers/b017.png",
       "pages": [
         {
           "page": 1,
@@ -1046,7 +1046,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b018.jpg",
+      "cover": "assets/covers/b018.png",
       "pages": [
         {
           "page": 1,
@@ -1107,7 +1107,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b019.jpg",
+      "cover": "assets/covers/b019.png",
       "pages": [
         {
           "page": 1,
@@ -1168,7 +1168,7 @@ window.ZHIYA_ADMIN_DATA = {
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
-      "cover": "assets/covers/b020.jpg",
+      "cover": "assets/covers/b020.png",
       "pages": [
         {
           "page": 1,
