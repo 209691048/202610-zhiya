@@ -16,3 +16,10 @@
 原型使用 Figma 的页面跳转和交互状态展示产品流程。真实语音合成、自由文本搜索、数据库查询和动态内容生成由后续软件端实现。
 
 最后更新：2026-11-09
+
+## 后台管理原型
+
+- [HTML 后台在线预览](https://raw.githack.com/MumLauds/202610-zhiya/main/prototype/admin-html/index.html)
+- [HTML 后台源码](./admin-html/index.html)
+- [Figma 后台插件](./admin-html/figma-plugin/)
+- [Figma 插件 manifest](./admin-html/figma-plugin/manifest.json)
