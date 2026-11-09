@@ -1,6 +1,7 @@
 {
   "document": "知芽系统接口契约",
   "status": "待团队评审",
+  "glossary": "../standards/glossary.md",
   "note": "所有示例为格式数据，不是真实模型输出、凭证或测试结果。",
   "common": {
     "authentication": "服务端Cookie使用Secure/HttpOnly/SameSite=Lax，写入验证CSRF。进入儿童模式时同事务吊销当前设备家长auth_sessions、签发child_grants及版本范围并绑定会话。退出须重新验证账号密码，撤销儿童授权并签发全新家长凭证；旧家长凭证不恢复。",
@@ -40,7 +41,7 @@
       "sourceReadingSessionId": "正整数；仅已认证家长访问本人同档案的IN_PROGRESS亲子会话。",
       "resumePageNumber": "服务端生成并随内容审核冻结；客户端不得在创建会话时指定或覆盖。",
       "clientRequestId": "字符串1～64字符；原创生成和续写切换必填，同一操作保持同键和同请求体。",
-      "storyVersionId": "具体版本主键；会话、页面、分支与授权固定到此版本；storybookId仅表示稳定本体。",
+      "storyVersionId": "会话、页面、分支与授权固定到此版本。标识语义见公共术语表。",
       "time": "库内UTC毫秒INTEGER，经序列化转换为ISO 8601 UTC文本。"
     },
     "interfaceGroups": {
@@ -86,8 +87,9 @@
         "READY",
         "FAILED"
       ],
-      "completion": "首次结束阅读在同一事务保存会话终态、事实记录和PENDING小结；事务外生成成功后置READY，确定失败置FAILED并保留事实摘要。",
-      "read": "API-013读取当前小结；READY返回已生成内容，FAILED只返回事实摘要及空活动数组。FALLBACK仅用于模型/互动结果，不是ReadingReport.status。",
+      "completion": "首次结束阅读在同一事务保存会话终态、事实记录、PENDING小结和供同键重放的原响应。事务外按既有文本模型调用超时生成；仅当小结仍为PENDING时，成功置READY，确定失败置FAILED并保留事实摘要。",
+      "startupRecovery": "首版单工作进程启动或重启时，在应用就绪前将遗留的PENDING小结条件更新为FAILED，保留事实摘要并将activities置为空数组。恢复不调用模型，保留会话终态、事实记录及原结束响应。",
+      "read": "API-013读取当前小结。READY返回已生成内容；PENDING或FAILED返回事实摘要及空活动数组。FALLBACK仅用于模型/互动结果，不是ReadingReport.status。",
       "repeat": "同键重放原结束响应，可能仍含PENDING；新键重复结束只返回既有终态及当前小结，不再次调用模型。本阶段不提供失败小结重新生成入口。"
     },
     "versionAccess": {
@@ -98,8 +100,12 @@
       "withdrawn": "WITHDRAWN立即拒绝新建会话、既有会话内容、正文和媒体访问；scope=mine和历史记录不能绕过。所有内容入口与媒体入口使用同一版本权限规则。"
     },
     "knowledgeVersioning": {
-      "identity": "knowledgeItemId对应具体knowledge_items行；同一itemKey由versionNumber区分版本。所有PATCH均插入新行、新ID，版本号由服务端原子分配递增；包含草稿内容修改和仅审核状态变更。旧行内容、来源及历史event_evidence引用不变。",
+      "identity": "知识版本与标识的含义见公共术语表。所有PATCH均插入新行及新ID，版本号由服务端原子分配递增。草稿内容修改和仅审核状态变更均遵循此规则。旧行内容、来源及历史event_evidence引用不变。",
+      "ageBand": "知识ageBand的取值见公共术语表。API-030必须提供该字段；API-031省略时沿用路径所指版本的值，显式传null时新版本适用全龄。API-029至API-031响应中的全龄知识返回ageBand: null。",
+      "taskTypes": "taskTypes为知识适用标签数组，取值见公共术语表的知识适用标签。task_types_json使用相同的UPPER_SNAKE_CASE值，标签按精确值匹配。",
+      "retrieval": "领域知识检索仅使用APPROVED版本。按具体年龄段初筛时仅匹配该年龄段与全龄知识，不扩展到其他年龄段。候选还须符合主题及知识适用标签筛选，再按关键词相关度取有限片段；候选不足时沿用该任务的安全回退。",
       "approval": "提交status=APPROVED须由有权内容管理员完成新内容与来源审核，服务端校验并记录reviewed_at，不将客户端状态值本身视为已批准。激活新APPROVED行与退休同itemKey旧APPROVED行在一个事务内完成；新DRAFT行不退休当前APPROVED版本。",
+      "retirement": "API-031停用请求只提交status=RETIRED，混入其他字段返回422。路径必须指向该itemKey当前APPROVED版本；已存在但不再是当前APPROVED的ID返回409。服务端在同一事务内按目标ID和status=APPROVED条件更新为RETIRED，须恰好更新一行，再插入同itemKey的RETIRED新版本。新版本复制内容和来源，响应返回新ID。任一步失败则回滚；成功后该itemKey退出新检索，历史引用继续指向实际使用的版本。",
       "example": "API-030创建806/v1(APPROVED)，API-031以806为来源修订得到807/v2(APPROVED)，同itemKey=guided-observation；806转RETIRED，已有event_evidence.knowledge_item_id仍为806，新检索使用807。"
     },
     "deliveryScope": {
@@ -588,7 +594,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "儿童只返回当前进度、可读页面与必要交互，不返回完整历史、管理或个人资料。内容读取遵守common.versionAccess。本人家长可读取当前小结，状态仅PENDING/READY/FAILED；生成中及失败时保留事实摘要，失败不提供模型生成活动。",
+      "constraints": "儿童只返回当前进度、可读页面与必要交互，不返回完整历史、管理或个人资料。内容读取遵守common.versionAccess。本人家长可读取当前小结，包括启动恢复后的小结；状态及返回内容见common.reportLifecycle。",
       "interfaceId": "API-013",
       "uniqueKey": "GET /api/v1/reading-sessions/{session_id}",
       "additionalExamples": [
@@ -643,7 +649,7 @@
           }
         },
         {
-          "name": "小结生成失败",
+          "name": "小结生成失败或启动恢复后为FAILED",
           "status": 200,
           "data": {
             "session": {
@@ -877,7 +883,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "首次结束同事务保存终态、事实记录及PENDING小结，随后事务外生成至READY/FAILED；用API-013读取最新状态。同键重放原响应，新键重复结束返回既有终态与当前小结，均不重复生成。本阶段不提供失败小结重试入口。TIME_LIMIT由服务端触发；CONTINUED仅由续写切换事务设置，客户端不得提交该reason。",
+      "constraints": "首次结束同事务保存终态、事实记录及PENDING小结。生成、启动恢复及重复结束规则见common.reportLifecycle；用API-013读取最新状态。TIME_LIMIT由服务端触发；CONTINUED仅由续写切换事务设置，客户端不得提交该reason。",
       "interfaceId": "API-019",
       "uniqueKey": "POST /api/v1/reading-sessions/{session_id}/completions",
       "examplePrecondition": "本例承接API-011创建的会话401（CREATED、revision=0、路径[]）。通过API-015提交STARTED后为IN_PROGRESS、currentPage=1、visitedPageNumbers=[1]、revision=1；此时立即主动结束，没有发生其他互动或翻页。"
@@ -1313,7 +1319,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "可提交WITHDRAWN撤回；发布前检查完整性、许可、内容和全部分支；修改已发布文本须建立新版本。发布新版时原子退休旧当前版本；LIBRARY退休版本禁止新会话，既有有效会话可续读。WITHDRAWN立即阻断所有内容和媒体入口。",
+      "constraints": "可提交WITHDRAWN撤回。发布操作仅适用于许可完备的LIBRARY版本，须由内容管理员执行。发布前检查完整性、许可、内容和全部分支。发布时在同一事务记录服务端鉴权得到的管理员账号ID为reviewed_by_id、服务器时间为reviewed_at，并将版本置为PUBLISHED。修改已发布文本须建立新版本。发布新版时原子退休旧当前版本；LIBRARY退休版本禁止新会话，既有有效会话可续读。WITHDRAWN立即阻断所有内容和媒体入口。",
       "interfaceId": "API-028",
       "uniqueKey": "PATCH /api/v1/admin/story-versions/{version_id}"
     },
@@ -1337,14 +1343,14 @@
               "title": "知识条目示例",
               "sourceTitle": "来源名称示例",
               "sourceReference": "来源文献定位示例",
-              "ageBand": "AGE_4_5",
+              "ageBand": null,
               "topicTags": [
                 "动物"
               ],
               "taskTypes": [
                 "GUIDANCE"
               ],
-              "content": "已审核知识示例",
+              "content": "待审核知识示例",
               "status": "DRAFT",
               "versionNumber": 1,
               "itemKey": "guided-observation"
@@ -1354,9 +1360,10 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "按知识版本逐项返回，knowledgeItemId标识具体行，itemKey关联同一知识条目的各版本；遵守common.knowledgeVersioning。",
+      "constraints": "按知识版本逐项返回，knowledgeItemId标识具体行，itemKey关联同一知识条目的各版本；全龄知识返回ageBand: null。遵守common.knowledgeVersioning。",
       "interfaceId": "API-029",
-      "uniqueKey": "GET /api/v1/admin/knowledge-items"
+      "uniqueKey": "GET /api/v1/admin/knowledge-items",
+      "examplePrecondition": "本例独立于API-030至API-031的连续示例。"
     },
     {
       "method": "POST",
@@ -1369,7 +1376,7 @@
         "title": "知识条目示例",
         "sourceTitle": "来源名称示例",
         "sourceReference": "来源文献定位示例",
-        "ageBand": "AGE_4_5",
+        "ageBand": null,
         "topicTags": [
           "动物"
         ],
@@ -1389,7 +1396,7 @@
           "title": "知识条目示例",
           "sourceTitle": "来源名称示例",
           "sourceReference": "来源文献定位示例",
-          "ageBand": "AGE_4_5",
+          "ageBand": null,
           "topicTags": [
             "动物"
           ],
@@ -1405,7 +1412,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "来源和年龄段必填；示例为有权管理员审核内容与来源后创建806/v1，服务端审核校验通过并记录reviewed_at才可保存APPROVED。仅APPROVED版本可检索；DRAFT创建不进入检索。知识版本规则见common.knowledgeVersioning。",
+      "constraints": "来源和ageBand字段必填，ageBand可显式为null表示全龄；创建状态为DRAFT或APPROVED。示例为有权管理员审核内容与来源后创建806/v1，服务端审核校验通过并记录reviewed_at才可保存APPROVED。知识版本与检索规则见common.knowledgeVersioning。",
       "interfaceId": "API-030",
       "uniqueKey": "POST /api/v1/admin/knowledge-items"
     },
@@ -1427,7 +1434,7 @@
           "title": "知识条目示例",
           "sourceTitle": "来源名称示例",
           "sourceReference": "来源文献定位示例",
-          "ageBand": "AGE_4_5",
+          "ageBand": null,
           "topicTags": [
             "动物"
           ],
@@ -1443,7 +1450,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "示例路径knowledge_id=806；审核修订后插入807/v2，同itemKey。所有PATCH均新行，包括草稿与仅状态修改；版本号由服务端原子递增。新APPROVED须完成服务端审核校验，并与退休旧APPROVED在同一事务提交；新DRAFT不退休当前批准版本。旧806内容及来源不覆盖，历史event_evidence仍引用806；规则见common.knowledgeVersioning。",
+      "constraints": "示例路径knowledge_id=806；审核修订后插入807/v2，同itemKey。所有PATCH均新行，包括草稿与仅状态修改；版本号由服务端原子递增。省略ageBand时沿用路径所指版本的值，显式传null时新版本适用全龄。新APPROVED须完成服务端审核校验，并与退休旧APPROVED在同一事务提交；新DRAFT不退休当前批准版本。停用仅接受status=RETIRED且路径指向当前APPROVED，旧版本ID返回409；事务及历史引用规则见common.knowledgeVersioning。",
       "interfaceId": "API-031",
       "uniqueKey": "PATCH /api/v1/admin/knowledge-items/{knowledge_id}",
       "additionalExamples": [
@@ -1460,7 +1467,7 @@
             "title": "知识条目示例",
             "sourceTitle": "来源名称示例",
             "sourceReference": "来源文献定位示例",
-            "ageBand": "AGE_4_5",
+            "ageBand": null,
             "topicTags": [
               "动物"
             ],
@@ -1486,6 +1493,44 @@
               "versionNumber": 2,
               "status": "APPROVED"
             },
+            "existingEventEvidence": {
+              "knowledgeItemId": 806
+            }
+          }
+        },
+        {
+          "name": "停用当前批准版并保留历史引用",
+          "requestPath": "/api/v1/admin/knowledge-items/807",
+          "request": {
+            "status": "RETIRED"
+          },
+          "status": 200,
+          "data": {
+            "knowledgeItemId": 808,
+            "title": "知识条目示例",
+            "sourceTitle": "来源名称示例",
+            "sourceReference": "来源文献定位示例",
+            "ageBand": null,
+            "topicTags": [
+              "动物"
+            ],
+            "taskTypes": [
+              "GUIDANCE"
+            ],
+            "content": "修订后的知识示例",
+            "status": "RETIRED",
+            "versionNumber": 3,
+            "itemKey": "guided-observation",
+            "locator": "第2节"
+          },
+          "postconditions": {
+            "oldVersion": {
+              "knowledgeItemId": 807,
+              "itemKey": "guided-observation",
+              "versionNumber": 2,
+              "status": "RETIRED"
+            },
+            "currentApprovedVersion": null,
             "existingEventEvidence": {
               "knowledgeItemId": 806
             }
