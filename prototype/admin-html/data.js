@@ -35,7 +35,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 6,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -104,7 +104,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1–L2",
       "pageCount": 6,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -173,7 +173,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -234,7 +234,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 6,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -303,7 +303,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2–L3",
       "pageCount": 6,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -372,7 +372,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -433,7 +433,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -494,7 +494,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -555,7 +555,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -615,7 +615,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -676,7 +676,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -737,7 +737,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1–L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -798,7 +798,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L1–L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -859,7 +859,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -920,7 +920,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -981,7 +981,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -1042,7 +1042,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2–L3",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -1103,7 +1103,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -1164,7 +1164,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -1225,7 +1225,7 @@ window.ZHIYA_ADMIN_DATA = {
       ],
       "difficulty": "L2",
       "pageCount": 5,
-      "status": "PUBLISHED",
+      "status": "DRAFT",
       "versionNo": 1,
       "sourceType": "团队原创",
       "licenseNote": "团队原创，仅限课程学习与演示，禁止商用",
@@ -1285,7 +1285,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L26-L29",
       "locator": "KN-AGE-001",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1300,7 +1300,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L31-L34",
       "locator": "KN-AGE-002",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1315,7 +1315,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L36-L39",
       "locator": "KN-AGE-003",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1330,7 +1330,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L63-L66",
       "locator": "KN-GUIDE-001",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1345,7 +1345,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L68-L71",
       "locator": "KN-GUIDE-002",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1360,7 +1360,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L73-L76",
       "locator": "KN-GUIDE-003",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1375,7 +1375,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L100-L103",
       "locator": "KN-SAFE-001",
       "tasks": [
-        "safety"
+        "SAFETY"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1390,7 +1390,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L105-L108",
       "locator": "KN-SAFE-002",
       "tasks": [
-        "safety"
+        "SAFETY"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1405,7 +1405,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L41-L44",
       "locator": "KN-AGE-004",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1420,7 +1420,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L46-L49",
       "locator": "KN-AGE-005",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1435,7 +1435,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L51-L54",
       "locator": "KN-AGE-006",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1450,7 +1450,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L56-L59",
       "locator": "KN-AGE-007",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1465,7 +1465,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L78-L81",
       "locator": "KN-GUIDE-004",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1480,7 +1480,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L83-L86",
       "locator": "KN-GUIDE-005",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1495,7 +1495,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L88-L91",
       "locator": "KN-GUIDE-006",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1510,7 +1510,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L93-L96",
       "locator": "KN-GUIDE-007",
       "tasks": [
-        "guidance"
+        "GUIDANCE"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1525,7 +1525,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L110-L113",
       "locator": "KN-SAFE-003",
       "tasks": [
-        "safety"
+        "SAFETY"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1540,7 +1540,7 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L115-L118",
       "locator": "KN-SAFE-004",
       "tasks": [
-        "safety"
+        "SAFETY"
       ],
       "status": "DRAFT",
       "version": 1
@@ -1555,22 +1555,22 @@ window.ZHIYA_ADMIN_DATA = {
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L120-L123",
       "locator": "KN-SAFE-005",
       "tasks": [
-        "safety"
+        "SAFETY"
       ],
       "status": "DRAFT",
       "version": 1
     },
     {
       "key": "KN-TAG-001",
-      "title": "知识条目检索时按\"年龄 → 能...",
-      "content": "知识条目检索时按\"年龄 → 能力类型 → 主题\"三级过滤，同龄段条目数不足时向相邻年龄段扩展一年。",
+      "title": "领域知识检索规则",
+      "content": "仅检索已审核（APPROVED）的知识条目。先匹配当前年龄段或全龄条目，再按主题和任务类型筛选，并按关键词相关度取有限片段。符合条件的知识不足时，沿用当前任务的安全回退。",
       "category": "通用",
       "age": "通用",
       "source": "知芽｜知识库知识条目 v2.5",
       "sourceRef": "https://github.com/MumLauds/202610-zhiya/blob/main/knowledge-base_v2.5/%E7%9F%A5%E8%AF%86%E5%BA%93%E7%9F%A5%E8%AF%86%E6%9D%A1%E7%9B%AE_v2.5.md#L127-L130",
       "locator": "KN-TAG-001",
       "tasks": [
-        "retrieval"
+        "RETRIEVAL"
       ],
       "status": "DRAFT",
       "version": 1

@@ -33,4 +33,4 @@
 
 ## 数据来源
 
-数据来自 `MumLauds/202610-zhiya` 仓库的 `data/seed/story_versions.json`、`story_pages.json`、`knowledge_items.json`，共 21 个绘本版本、19 张真实封面和 20 条领域知识。
+数据来自 `MumLauds/202610-zhiya` 仓库的 `data/seed/story_versions.json`、`story_pages.json`、`knowledge_items.json`，共 21 个绘本版本（均为 `DRAFT`）、19 张真实封面和 20 条领域知识。

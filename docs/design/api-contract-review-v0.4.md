@@ -1,5 +1,7 @@
 # G04 接口与数据交接核对 v0.4
 
+> 以下保留基线 `0e974ca` 的评审记录。当前结论见文末的[本轮遗留问题处理](#本轮遗留问题处理)。
+
 状态：**待团队评审**。本记录整理可复核的现状和需要确认的问题，不修改 v0.4 契约，不代表设计已冻结或接口已实现。复核基线为团队仓库 main 的 `0e974ca`（包含 PR #15、#17 和移动端原型回退），复核日期为 2026-11-09；由姚华俊使用 Codex 辅助整理。
 
 ## 已核对的范围
@@ -25,3 +27,38 @@
 - 记录上述问题的决定、确认人和日期；涉及契约变更时同时更新 Markdown、JSON 示例和相关设计资料。
 - 用最终约定准备可复现的成功、权限拒绝、参数错误、重复请求和版本冲突用例，代码实现后再记录真实运行结果。
 - 数据导入、真实媒体服务、前后端联调和团队确认尚未由本次静态核对完成。
+
+## 本轮遗留问题处理
+
+2026-11-09 在工作基线 `7fb10d7` 上修订。依据[项目设计与开发规范 v1.1](../standards/知芽_项目设计与开发规范_精简版_v1.1.md)及[需求规格说明书 v0.2](../requirements/软件需求规格说明书.md)，涉及接口契约 v0.4、系统与数据库设计 v1.1、知识库 v2.5。以下为本轮修订，待团队评审。后端实现及用例执行待交付。
+
+| 需求与用例 | 修改原因与处理 | 影响模块、数据与负责角色 | 实现后验收（待执行） |
+| --- | --- | --- | --- |
+| FR-11 · TC-FR11-01 | 20 个原创种子版本缺少发布所需的逐页素材和审核记录，改为 `DRAFT`。20 张已交付图片用作封面，发布前须配齐逐页素材并核对使用授权。 | M08 内容与知识管理，API-024/028、`story_versions`、`story_pages`。知识工程交接素材和授权，业务后端承接审核与发布。 | 未审核或缺图草稿拒绝发布，公开端不可见。管理员审核合格后，审核人、审核时间和发布状态在同一事务落库。 |
+| AI-01、AI-07 · TC-AI01-01、TC-AI07-01 | 统一全龄、任务标签大小写和知识停用规则。知识检索限当前有效的 `APPROVED` 版本，匹配本年龄段或全龄；`taskTypes` 和 `task_types_json` 使用同一组大写标签。数据库设计表 4-19 补充显式停用的约束。 | M04 阅读智能体、M08 内容与知识管理，API-029～031、`knowledge_items`、`event_evidence`。领域智能体和知识工程核对检索及来源，业务后端承接版本事务。 | 验证同龄和全龄条目可命中，候选不足时触发安全回退。停用当前批准版后从新检索排除且历史引用可追溯；旧版本 ID 返回 `409`，停用请求混入其他字段返回 `422`。 |
+| FR-09、FR-12 · TC-FR09-01、TC-FR12-01 | 进程中断会留下 `PENDING` 小结。首版单工作进程启动时把遗留小结置为 `FAILED`，保留事实摘要和原结束响应，沿用运行时超时规则。 | M03 阅读会话、M07 阅读反馈，API-013/019、`reading_reports`、`request_executions`。业务后端承接恢复和幂等，领域智能体承接正常生成。 | 正常生成成功后读取 `READY`；结束提交后中断并重启，读取 `FAILED`、原事实摘要和空活动数组。同键重放原响应，新键返回当前小结，模型调用次数不增加。 |
+
+数据库时序图 5-1 描述一次正常阅读到结束的小结处理。应用启动恢复另由[接口契约](api-contract.md)定义。知识任务标签的具体值见[公共术语与枚举](../standards/glossary.md)。
+
+### 静态核对结果
+
+- 两份契约的 32 条接口编号、方法、路径与权限逐项一致。已检查全龄、知识停用和小结恢复的结构化示例。
+- 21 个绘本版本和 20 条知识均为 `DRAFT`。核对了 110 页及后继引用、20 张封面 PNG 签名和 20 条知识来源的本地行号。后台原型的版本 ID 和状态、知识条目的状态、任务标签、正文和来源与种子一致。
+- 数据库设计 PDF 共 39 页。逐页比对仅表 4-19 所在第 26 页的知识版本单元格有文字和画面差异。页签、书签和 152 个导航链接一致。
+
+在仓库根目录可用 PowerShell 复核差异、草稿状态、标签集合和接口目录。`Compare-Object` 无输出表示两份接口目录的条目一致。
+
+```powershell
+git -c core.whitespace=cr-at-eol diff --check
+$versions = Get-Content data/seed/story_versions.json -Raw -Encoding UTF8 | ConvertFrom-Json
+$knowledge = Get-Content data/seed/knowledge_items.json -Raw -Encoding UTF8 | ConvertFrom-Json
+$versions | Group-Object status
+$knowledge | Group-Object status
+$knowledge.task_types_json | Sort-Object -CaseSensitive -Unique
+$endpoints = (Get-Content docs/design/api-contract-v0.4.json -Raw -Encoding UTF8 | ConvertFrom-Json).endpoints
+$catalogue = Get-Content docs/design/api-contract.md -Encoding UTF8 | Where-Object { $_ -match '^\| API-\d+' }
+$rows = $endpoints | ForEach-Object { "| $($_.interfaceId) | $($_.method) $($_.path) | $($_.permission) |" }
+Compare-Object $catalogue $rows -CaseSensitive
+```
+
+书架封面字段、结束请求的修订号与重放约定、错误处理和断线恢复仍按原交接点确认。实现交付后再执行数据导入、媒体访问和接口验收。
