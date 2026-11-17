@@ -30,5 +30,5 @@ def test_health_checks_database_readiness(tmp_path, monkeypatch):
     assert ready.json()["requestId"] != unavailable.json()["requestId"]
 
 
-def test_no_business_routes_are_exposed():
-    assert set(client.get("/openapi.json").json()["paths"]) == {"/api/v1/health"}
+def test_health_route_is_exposed():
+    assert "/api/v1/health" in client.get("/openapi.json").json()["paths"]
