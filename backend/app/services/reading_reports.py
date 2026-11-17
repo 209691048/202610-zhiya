@@ -75,24 +75,31 @@ def validated_summary(text: str, facts: str, has_pages: bool) -> str | None:
     return summary if len(summary) <= MAX_SUMMARY_CHARS else None
 
 
-def _settle(session_id: int, status: str, summary: str | None = None) -> bool:
-    """Conditionally move a PENDING report; never overrides READY/FAILED written elsewhere."""
+def _settle(session_id: int, status: str, summary: str | None = None,
+            *, generation_token: str | None = None) -> bool:
+    """Conditionally move a PENDING report; never overrides READY/FAILED or a recreated session."""
     now = int(time.time() * 1000)
+    token_clause = (
+        " AND EXISTS (SELECT 1 FROM request_executions WHERE session_id = ? AND execution_token = ?)"
+        if generation_token is not None else ""
+    )
+    token_params = (session_id, generation_token) if generation_token is not None else ()
     with closing(connect()) as db, db:
         if status == "READY":
             cursor = db.execute(
-                """UPDATE reading_reports SET status = 'READY', summary = ?, activities_json = '[]',
-                   updated_at = ? WHERE session_id = ? AND status = 'PENDING'""",
-                (summary, now, session_id))
+                f"""UPDATE reading_reports SET status = 'READY', summary = ?, activities_json = '[]',
+                   updated_at = ? WHERE session_id = ? AND status = 'PENDING'{token_clause}""",
+                (summary, now, session_id, *token_params))
         else:
             cursor = db.execute(
-                """UPDATE reading_reports SET status = 'FAILED', activities_json = '[]', updated_at = ?
-                   WHERE session_id = ? AND status = 'PENDING'""",
-                (now, session_id))
+                f"""UPDATE reading_reports SET status = 'FAILED', activities_json = '[]', updated_at = ?
+                   WHERE session_id = ? AND status = 'PENDING'{token_clause}""",
+                (now, session_id, *token_params))
         return cursor.rowcount == 1
 
 
-async def generate_report(session_id: int, facts: str, page_texts: list[str], adapter) -> None:
+async def generate_report(session_id: int, facts: str, page_texts: list[str], adapter,
+                          *, generation_token: str | None = None) -> None:
     """Runs after the finish transaction commits. One model attempt at most, no retries."""
     text = ""
     if adapter is not None:
@@ -111,9 +118,9 @@ async def generate_report(session_id: int, facts: str, page_texts: list[str], ad
     try:
         summary = validated_summary(text, facts, bool(page_texts))
         if summary is not None:
-            _settle(session_id, "READY", summary)
+            _settle(session_id, "READY", summary, generation_token=generation_token)
         else:
-            _settle(session_id, "FAILED")
+            _settle(session_id, "FAILED", generation_token=generation_token)
     except sqlite3.Error:
         # Left PENDING; startup recovery will settle it to FAILED.
         logger.warning("report_settle_failed session_id=%s", session_id)

@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Path, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.v1.auth import connect, error
 from app.api.v1.profiles import guardian
 from app.api.v1.storybooks import VISIBLE
+from app.services.cleanup import delete_session_rows, purge_voice_media
 from app.services.reading_reports import ensure_startup_recovered, fact_summary, generate_report, report_object
 
 router = APIRouter(prefix="/api/v1/reading-sessions")
@@ -154,6 +155,36 @@ def get_session(request: Request, session_id: int = Path(ge=1, le=MAX_ID)):
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
 
 
+@router.delete("/{session_id}", status_code=204)
+def delete_session(request: Request, session_id: int = Path(ge=1, le=MAX_ID)):
+    """API-014: delete a guardian-owned reading session, its derived rows, and revoke its active grant."""
+    try:
+        with closing(connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            owner, failure = guardian(db, request, write=True)
+            if failure:
+                return failure
+            row = db.execute(
+                """SELECT s.id, s.grant_id FROM reading_sessions s
+                JOIN child_profiles p ON p.id = s.profile_id
+                WHERE s.id = ? AND p.guardian_id = ?""",
+                (session_id, owner),
+            ).fetchone()
+            if not row:
+                return error(request, 404, "RESOURCE_NOT_FOUND", "会话不可用")
+            now = int(time.time() * 1000)
+            delete_session_rows(db, session_id)
+            if row["grant_id"] is not None:
+                db.execute(
+                    "UPDATE child_grants SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?",
+                    (now, row["grant_id"]),
+                )
+    except sqlite3.Error:
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
+    purge_voice_media(request.app.state, [session_id])
+    return Response(status_code=204)
+
+
 def request_digest(path: str, body: dict) -> str:
     canonical = json.dumps({"method": "POST", "path": path, "body": body},
                            sort_keys=True, separators=(',', ':'), ensure_ascii=False)
@@ -204,13 +235,16 @@ def replay_session_event(db, request: Request, session_id: int, client_event_id:
 
 
 def record_session_event(db, owner: int, session_id: int, client_event_id: str, digest: str,
-                         now: int, status_code: int, response: dict, *, status: str = "SUCCEEDED") -> None:
+                         now: int, status_code: int, response: dict, *,
+                         status: str = "SUCCEEDED", execution_token: str | None = None) -> str:
+    token = execution_token or str(uuid4())
     db.execute("""INSERT INTO request_executions
         (owner_account_id, session_id, scope_type, scope_id, client_request_id, request_digest,
          status, execution_token, started_at, deadline_at, completed_at, response_status, response_body)
         VALUES (?, ?, 'SESSION_EVENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (owner, session_id, session_id, client_event_id, digest, status, str(uuid4()), now, now + 25000,
+        (owner, session_id, session_id, client_event_id, digest, status, token, now, now + 25000,
          now, status_code, json.dumps(response, ensure_ascii=False)))
+    return token
 
 
 def fail_session_event(db, request: Request, owner: int, session_id: int, client_event_id: str,
@@ -291,12 +325,14 @@ def finish_session(payload: Completion, request: Request, background: Background
                 return replay
             now = int(time.time() * 1000)
             generation = None
+            generation_token = None
             if row["status"] == "FINISHED":
                 # New key after finish: existing terminal state and current report, no model call.
                 report = db.execute("SELECT * FROM reading_reports WHERE session_id = ?", (session_id,)).fetchone()
             elif row["status"] == "IN_PROGRESS" and row["revision"] == payload.expectedRevision:
                 visited = json.loads(row["visited_pages_json"])
                 facts = fact_summary(visited)
+                generation_token = str(uuid4())
                 db.execute("""UPDATE reading_sessions SET status = 'FINISHED', end_reason = 'USER_FINISH',
                            ended_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?""",
                            (now, session_id, row["revision"]))
@@ -315,10 +351,12 @@ def finish_session(payload: Completion, request: Request, background: Background
                                  (session_id,)).fetchone()
             response = {"data": {"session": session_object(current), "report": report_object(session_id, report)},
                         "requestId": request.state.request_id}
-            record_session_event(db, owner, session_id, payload.clientEventId, digest, now, 200, response)
+            record_session_event(db, owner, session_id, payload.clientEventId, digest, now, 200, response,
+                                 execution_token=generation_token)
     except sqlite3.Error:
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
     if generation is not None:
         background.add_task(generate_report, session_id, *generation,
-                            getattr(request.app.state, "model_adapter", None))
+                            getattr(request.app.state, "model_adapter", None),
+                            generation_token=generation_token)
     return JSONResponse(status_code=200, content=response)

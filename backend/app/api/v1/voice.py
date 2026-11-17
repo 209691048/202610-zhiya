@@ -156,8 +156,11 @@ async def media(request: Request, resource_key: str):
     try:
         principal = await authenticate(request, write=False)
         store = request.app.state.voice_media
-        store.expire()
-        value = store.items.get(resource_key) if re.fullmatch(r"audio-[A-Za-z0-9_-]{32}", resource_key) else None
+        if re.fullmatch(r"audio-[A-Za-z0-9_-]{32}", resource_key):
+            value = store.get(resource_key)
+        else:
+            store.expire()
+            value = None
         if value is None or value.principal != principal:
             raise ServiceError("RESOURCE_NOT_FOUND", "请求的资源不存在", 404)
         recheck_source(principal, value.snapshot)

@@ -59,7 +59,7 @@ def create_app(settings: Settings | None = None, speech_settings: SpeechSettings
                 expiry_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await expiry_task
-                app.state.voice_media.items.clear()
+                app.state.voice_media.clear()
 
     app = FastAPI(title="知芽后端", version="0.1.0", lifespan=lifespan)
     app.state.voice_auth = voice_auth if voice_auth is not None else GuardianVoiceAuthenticator()
