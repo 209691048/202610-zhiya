@@ -130,3 +130,26 @@ taskTypes为知识适用标签数组，取值见公共术语表的知识适用�
 提交status=APPROVED须由有权内容管理员完成新内容与来源审核，服务端校验并记录reviewed_at，不将客户端状态值本身视为已批准。激活新APPROVED行与退休同itemKey旧APPROVED行在一个事务内完成；新DRAFT行不退休当前APPROVED版本。
 API-031停用请求只提交status=RETIRED，混入其他字段返回422。路径必须指向该itemKey当前APPROVED版本；已存在但不再是当前APPROVED的ID返回409。服务端在同一事务内按目标ID和status=APPROVED条件更新为RETIRED，须恰好更新一行，再插入同itemKey的RETIRED新版本。新版本复制内容和来源，响应返回新ID。任一步失败则回滚；成功后该itemKey退出新检索，历史引用继续指向实际使用的版本。
 API-030创建806/v1(APPROVED)，API-031以806为来源修订得到807/v2(APPROVED)，同itemKey=guided-observation；806转RETIRED，已有event_evidence.knowledge_item_id仍为806，新检索使用807。继续对807提交仅含status=RETIRED的请求后，807转RETIRED、返回808/v3(RETIRED)，该itemKey不再有批准版本，已有引用仍指向806。
+
+## 语音偏好扩展草案
+
+2026-11-11，林鑫 / G08，DCL-013；关联 FR-08/12。以下是待团队评审的增量建议，未冻结、未实现公开路由或档案存储，不改变上表和 v0.4 JSON 的既有接口。内部实现与模型目录见[交接说明](speech-preferences-handoff.md)。
+
+- 候选 `GET /api/v1/voice/options`，接口编号待团队分配，仅已认证家长。服务端使用当前模型的 `get_speech_options(model)`，按既有 `data` / `requestId` 包装返回；不调用付费服务。`data.voices` 为 `{voiceId, displayName, description, category, languages, dialects, scenarios}` 数组，`data.speechRates` 为支持的语速枚举数组，`data.defaultSpeechRate` 为 `NORMAL`。旧模型不再提供可选项；未配置合成时业务层应返回不可用状态，不能把静态目录当作服务可用证明。
+- API-006 候选新增 `speechPreferences` 对象，例如 `{"speechPreferences":{"voiceId":"wenhuaiqing_v3.1","speechRate":"SLOW"}}`；API-004 返回同结构。只允许本人家长修改，沿用安全 Cookie、写入防跨站请求与归属校验；他人档案按既有不可见规则返回 404，儿童授权不能写设置。省略整个对象表示不改；提供时两个字段均必填，null、未知字段、未知/跨模型声线和无效语速返回 422，整次修改不部分落库。
+- `speechRate` 为 `SLOW` / `NORMAL` / `FAST`，含义是模型合成语速；`voiceId` 是受支持声线的供应商原值，按第三方命名例外保留。前端中文标签由界面映射，不向家长展示底层枚举。
+- API-023 继续使用既有已授权事件/页面来源，由业务后端按会话对应档案读取偏好后调用内部网关；不在合成请求开放任意正文、模型名或供应商 URL。请求期间保存偏好变化不改动该请求已取得的快照，下一次合成使用新值；会话与资源权限仍在返回前复核。
+- 档案持久化候选为 `child_profiles.voice_id`、`child_profiles.speech_rate`，与上述字段一一映射；约束、默认值和存量迁移由业务后端随数据库设计评审实现。本轮无建列或迁移。新模型默认温怀清 / NORMAL；已有不支持的偏好须明确迁移或提示重选，不能悄悄替换声线。
+
+DCL-014（2026-11-11）目录元数据草案：category 取 MULTILINGUAL_DIALECT（多语种与方言）、CHINESE（精品中文）、ENGLISH（精品英文）、OTHER_SYSTEM（其他系统声线）、OTHER_LANGUAGE（其他语言），旧模型兼容项为 LEGACY。languages、dialects、scenarios 均是显示用中文字符串数组，不是供应商请求参数或适龄认证；空数组表示官方未明确，不代表支持所有语言。displayName 不保证唯一（不同语言可同名），选择、保存和列表键必须使用精确 voiceId，保留其大小写。新增信息只用于目录展示，档案仍只保存 voiceId / speechRate，不增加数据库列。
+
+DCL-017（2026-11-12）范围调整：当前仅保留温怀清、叶知晴、龙牛牛、龙闪闪、龙杰力豆、龙泡泡六种声线，按此顺序返回；对应 voiceId 见交接说明。旧模型与其余声线不可选，原 DCL-014 全量目录仅为历史决策。已有不支持的偏好须重选，不能静默替换；字段结构不变。
+
+DCL-020（2026-11-12）实现进展：API-022/023 与 API-024 音频分支已在本地实现，业务认证未接入时默认拒绝。此处声线选项及档案偏好扩展仍待评审和实现；格式转换与接口边界见[公开语音交接](voice-api-handoff.md)，未修改 v0.4 JSON。
+
+DCL-021（2026-11-12，历史记录，依赖码及读取重试语义已由 DCL-022 更新）G08 错误码调整：同会话语音在途返回 409 `VOICE_REQUEST_IN_PROGRESS`，区别于 v0.4 JSON 中带幂等记录的业务 `REQUEST_IN_PROGRESS`；全局并发仍返回 429 `VOICE_BUSY`。当时资源不可见使用 `RESOURCE_NOT_FOUND`，数据库不可用采用 #28 早期候选名 `SERVICE_UNAVAILABLE`，均为 retryable=false。
+
+DCL-022（2026-11-14）对齐 #28 合并提交 `16bb85c` 的依赖错误约定：API-022/023/024 音频实现统一使用 503 `DEPENDENCY_UNAVAILABLE`。媒体 GET 的依赖读取失败为 retryable=true，仅允许重试原资源读取并重新校验权限，不触发音频合成；识别/合成 POST 在调用前后遇到数据库故障均保持 retryable=false，不自动再次调用供应商。404 `RESOURCE_NOT_FOUND`、语音并发及其他专用码不变，不添加 Retry-After。当前范围不实现图片业务、认证或档案存储；完整错误边界见[公开语音交接](voice-api-handoff.md#语音错误码与重试边界dcl-021)。
+
+
+DCL-023（2026-11-16）引入 PR #30 的 G07 首批实现（903695e）：共同应用现包含注册、家长登录/退出、档案列表/创建/修改和绘本列表/版本详情。API-022/023/024 音频分支默认复用其真实家长 Cookie/CSRF 校验；数据库就绪时匿名返回 401 AUTH_REQUIRED，写请求缺失或错误 CSRF 返回 403 CSRF_INVALID。读取/写入的依赖失败仍按 DCL-022 区分；新业务响应统一 requestId。不新增语音输入字段、数据库列或儿童认证入口，阅读会话创建、互动持久化、图片分派和偏好存储仍待业务实现。来源、兼容性及验证边界见[交接文档](voice-api-handoff.md#与最新-pr-30-的接入核对)。

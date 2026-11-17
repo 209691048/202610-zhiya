@@ -8,7 +8,6 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import closing
-from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -37,11 +36,11 @@ class Credentials(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-def error(status: int, code: str, message: str, *, retryable: bool = False, headers=None):
+def error(request: Request, status: int, code: str, message: str, *, retryable: bool = False, headers=None):
     return JSONResponse(
         status_code=status,
         content={"error": {"code": code, "message": message, "retryable": retryable},
-                 "requestId": str(uuid4())},
+                 "requestId": request.state.request_id},
         headers=headers,
     )
 
@@ -77,6 +76,11 @@ def csrf_for(token: str) -> str:
     return hmac.new(token.encode("utf-8"), b"zhiya-csrf-v1", hashlib.sha256).hexdigest()
 
 
+def valid_csrf(request: Request, token: str) -> bool:
+    supplied = request.headers.get("X-CSRF-Token", "")
+    return supplied.isascii() and hmac.compare_digest(supplied, csrf_for(token))
+
+
 def allowed_login(client: str) -> bool:
     now = time.monotonic()
     with _login_lock:
@@ -94,7 +98,7 @@ def allowed_login(client: str) -> bool:
 
 
 @router.post("/registrations", status_code=201)
-def register(payload: Credentials):
+def register(payload: Credentials, request: Request):
     try:
         with closing(connect()) as db, db:
             cursor = db.execute(
@@ -103,17 +107,17 @@ def register(payload: Credentials):
             )
             account_id = cursor.lastrowid
     except sqlite3.IntegrityError:
-        return error(409, "ACCOUNT_EXISTS", "账号已存在")
+        return error(request, 409, "ACCOUNT_EXISTS", "账号已存在")
     except sqlite3.Error:
-        return error(503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
-    return {"data": {"accountId": account_id}, "requestId": str(uuid4())}
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
+    return {"data": {"accountId": account_id}, "requestId": request.state.request_id}
 
 
 @router.post("/sessions", status_code=201)
 def login(payload: Credentials, request: Request):
     client = request.client.host if request.client else "unknown"
     if not allowed_login(client):
-        return error(429, "RATE_LIMITED", "尝试次数过多，请稍后再试", retryable=True,
+        return error(request, 429, "RATE_LIMITED", "尝试次数过多，请稍后再试", retryable=True,
                      headers={"Retry-After": str(LOGIN_WINDOW)})
     try:
         with closing(connect()) as db, db:
@@ -123,7 +127,7 @@ def login(payload: Credentials, request: Request):
             # Keep password verification work similar when the account is absent.
             stored = account["password_hash"] if account else password_hash("dummy-password")
             if not password_matches(payload.password, stored) or not account:
-                return error(401, "INVALID_CREDENTIALS", "账号或密码错误")
+                return error(request, 401, "INVALID_CREDENTIALS", "账号或密码错误")
             token = secrets.token_urlsafe(32)
             now = int(time.time() * 1000)
             db.execute(
@@ -132,9 +136,9 @@ def login(payload: Credentials, request: Request):
             )
             account_id = account["id"]
     except sqlite3.Error:
-        return error(503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
     response = JSONResponse(status_code=201, content={
-        "data": {"accountId": account_id}, "requestId": str(uuid4())
+        "data": {"accountId": account_id}, "requestId": request.state.request_id
     })
     response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, secure=True,
                         httponly=True, samesite="lax", path="/")
@@ -147,10 +151,9 @@ def login(payload: Credentials, request: Request):
 def logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
-        return error(401, "AUTH_REQUIRED", "请先登录")
-    csrf = request.headers.get("X-CSRF-Token", "")
-    if not hmac.compare_digest(csrf, csrf_for(token)):
-        return error(403, "CSRF_INVALID", "请求校验失败")
+        return error(request, 401, "AUTH_REQUIRED", "请先登录")
+    if not valid_csrf(request, token):
+        return error(request, 403, "CSRF_INVALID", "请求校验失败")
     now = int(time.time() * 1000)
     try:
         with closing(connect()) as db, db:
@@ -159,14 +162,14 @@ def logout(request: Request):
                 (token_digest(token), now),
             ).fetchone()
             if not session:
-                return error(401, "AUTH_REQUIRED", "请先登录")
+                return error(request, 401, "AUTH_REQUIRED", "请先登录")
             db.execute("UPDATE auth_sessions SET revoked_at = ? WHERE id = ?", (now, session["id"]))
             db.execute(
                 "UPDATE child_grants SET revoked_at = ? WHERE issued_by_session_id = ? AND revoked_at IS NULL",
                 (now, session["id"]),
             )
     except sqlite3.Error:
-        return error(503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
     response = Response(status_code=204)
     response.delete_cookie(SESSION_COOKIE, secure=True, httponly=True, samesite="lax", path="/")
     response.delete_cookie(CSRF_COOKIE, secure=True, samesite="lax", path="/")
