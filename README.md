@@ -79,7 +79,7 @@ npm --prefix frontend run build
 - [六声线试听与独立交付验证](docs/testing/g08-live-delivery-checks.md)
 - [知芽软件工程团队项目选题报告（立项版本）](docs/知芽-软件工程团队项目选题报告.docx)
 - [软件需求规格说明书 v0.3（待团队评审）](docs/requirements/软件需求规格说明书.md)
-- [项目设计与开发规范 v1.1（修订评审稿）](docs/standards/知芽_项目设计与开发规范_精简版_v1.1.md)
+- [项目设计与开发规范 v1.2（修订评审稿）](docs/standards/知芽_项目设计与开发规范_精简版_v1.2.md)
 - [公共术语与枚举](docs/standards/glossary.md)
 - [设计变更与冲突决策记录](docs/standards/design-change-log.md)
 - [系统与数据库设计 v1.1](docs/design/team-lead-handoff-v1.1.md)

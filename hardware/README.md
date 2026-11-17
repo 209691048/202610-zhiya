@@ -46,6 +46,8 @@ ESP-IDF 分区表位于 `0x8000`。NVS 从 `0x9000` 开始，占 24 KiB，供后
 
 ## 任务状态与项目边界
 
+- H00 已提交[硬件设计变更申请](docs/h00-hardware-change-request.md)和[接口决策登记](docs/h00-interface-decisions.md)供团队评审，涵盖选型风险、验收条件和后端依赖。
+
 - H01 已在 Windows 上使用 ESP-IDF v5.5.5 验证 `idf.py set-target esp32s3` 和 `idf.py build`，生成应用、引导程序和分区表。上板验收由硬件负责人记录。此阶段的设备行为限于串口诊断。
 - H02 先验证 H01 上板及厂商 LCD、触摸、LVGL 示例。按实际板卡修订对照[微雪原理图资源](https://docs.waveshare.com/ESP32-S3-Touch-LCD-4.3C/Resources-And-Documents)，核对 IO 扩展器及触摸复位、背光、RGB 时序，再实测触摸方向和 PSRAM 余量。微雪示例与托管 BSP 的 IO 扩展器存在 CH422G/CH32V003 命名差异，需结合原理图与实板确认。
 - [SRS v0.3](../docs/requirements/软件需求规格说明书.md) 记录 4.3C 彩色触摸方案，保留 HW-01～HW-05 的可选扩展级别，修订依据见 [DCL-025](../docs/standards/design-change-log.md)。SRS 修订及后续设备认证、授权和受控媒体访问待团队评审。现有接口以[接口契约 v0.4](../docs/design/api-contract.md)和[对应 JSON](../docs/design/api-contract-v0.4.json)为基准。
