@@ -45,8 +45,8 @@ def error(request: Request, status: int, code: str, message: str, *, retryable: 
     )
 
 
-def connect():
-    db = sqlite3.connect(f"{database_path().as_uri()}?mode=rw", uri=True, timeout=5)
+def connect(timeout: float = 5.0):
+    db = sqlite3.connect(f"{database_path().as_uri()}?mode=rw", uri=True, timeout=timeout)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
     return db

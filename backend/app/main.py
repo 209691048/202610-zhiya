@@ -16,6 +16,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.profiles import router as profiles_router
 from app.api.v1.storybooks import router as storybooks_router
 from app.api.v1.voice import router as voice_router
+from app.api.v1.reading_sessions import router as reading_sessions_router
 from app.adapters.model import ModelAdapter
 from app.config import Settings
 from app.errors import ServiceError
@@ -25,6 +26,7 @@ from app.voice_gateway import VoiceGateway
 from app.services.voice_access import VoiceAuthenticator
 from app.services.voice_auth import GuardianVoiceAuthenticator
 from app.services.voice_media import VoiceMediaStore
+from app.services.reading_reports import recover_pending_reports
 
 logger = logging.getLogger("zhiya.http")
 
@@ -40,6 +42,8 @@ def create_app(settings: Settings | None = None, speech_settings: SpeechSettings
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Single-worker first release: settle leftover PENDING reports before serving requests.
+        recover_pending_reports()
         async with ModelGateway(config) as gateway, VoiceGateway(speech_config) as voice_gateway:
             app.state.model_gateway = gateway
             app.state.model_adapter = ModelAdapter(gateway)
@@ -102,6 +106,7 @@ def create_app(settings: Settings | None = None, speech_settings: SpeechSettings
     app.include_router(profiles_router)
     app.include_router(storybooks_router)
     app.include_router(voice_router)
+    app.include_router(reading_sessions_router)
 
     return app
 

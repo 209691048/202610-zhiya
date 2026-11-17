@@ -87,8 +87,12 @@ def get_story_version(request: Request, version_id: int = Path(ge=1, le=90071992
                 return failure
             row = db.execute(
                 "SELECT v.* FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id "
-                "WHERE v.id = ? AND " + VISIBLE,
-                (version_id, owner, True, owner),
+                "WHERE v.id = ? AND (" + VISIBLE +
+                " OR (v.status = 'RETIRED' AND v.reviewed_by_id IS NOT NULL AND v.reviewed_at IS NOT NULL "
+                "AND b.source_type = 'LIBRARY' "
+                "AND EXISTS (SELECT 1 FROM reading_sessions s JOIN child_profiles p ON p.id = s.profile_id "
+                "WHERE s.version_id = v.id AND p.guardian_id = ? AND s.status IN ('CREATED', 'IN_PROGRESS'))))",
+                (version_id, owner, True, owner, owner),
             ).fetchone()
             if not row:
                 return error(request, 404, "RESOURCE_NOT_FOUND", "绘本不可用")

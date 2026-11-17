@@ -152,3 +152,72 @@ def test_real_auth_dependency_failure_keeps_get_and_post_retry_distinct(integrat
     assert client.get(url).content == wav(24000)
     app.state.voice_gateway.synthesize.assert_awaited_once()
     app.state.voice_gateway.transcribe.assert_not_awaited()
+
+
+def test_real_reading_session_lifecycle_with_voice_and_media(tmp_path, monkeypatch):
+    """End-to-end compatibility between real G07 reading-session APIs and G08 voice/media APIs."""
+    path = tmp_path / "reading-voice.sqlite3"
+    monkeypatch.setenv("ZHIYA_DB_PATH", str(path))
+    with closing(sqlite3.connect(path)) as db:
+        db.executescript((Path(__file__).resolve().parents[2] / "database/schema.sql").read_text(encoding="utf-8"))
+    _login_attempts.clear()
+    application = create_app(Settings(), SpeechSettings(api_key="test-key", tts_api_url="https://space.example.test/tts"))
+    try:
+        with TestClient(application, base_url="https://testserver") as client:
+            application.state.voice_gateway = AsyncMock()
+            application.state.voice_gateway.synthesize.return_value = wav(24000)
+            application.state.voice_gateway.transcribe.return_value = Transcription("小朋友的回答")
+            headers = login(client)
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("PRAGMA foreign_keys = ON")
+                db.executescript("""
+                    INSERT INTO storybooks VALUES (1, NULL, 'LIBRARY', 0);
+                    INSERT INTO story_versions(id, storybook_id, version_no, title, topics_json, age_min, age_max,
+                        license_note, status, reviewed_by_id, reviewed_at, created_at, branching)
+                        VALUES (1, 1, 1, '共读测试', '[]', 3, 6, 'test', 'PUBLISHED', 1, 1, 0, 0);
+                    INSERT INTO story_pages(version_id, page_no, body_text, image_ref, default_next_page_number)
+                        VALUES (1, 2, '第二页正文', 'none', NULL), (1, 1, '第一页正文', 'none', 2);
+                """)
+            profile_id = checked(client.post("/api/v1/child-profiles", headers=headers,
+                                             json={"ageBand": "AGE_4_5", "preferredMinutes": 10}), 201)["data"]["childProfileId"]
+            session_id = checked(client.post("/api/v1/reading-sessions", headers=headers, json={
+                "childProfileId": profile_id, "storyVersionId": 1, "mode": "PARENT_CHILD"
+            }), 201)["data"]["readingSessionId"]
+
+            # CREATED (revision 0) cannot synthesize or transcribe yet.
+            created_ref = {"readingSessionId": session_id, "pageNumber": 1, "revision": 0}
+            assert checked(client.post("/api/v1/voice/syntheses", json=created_ref, headers=headers), 409)["error"]["code"] == "SESSION_CONFLICT"
+            assert checked(client.post("/api/v1/voice/transcriptions", data=created_ref, headers=headers,
+                                       files={"file": ("input.wav", wav(), "audio/wav")}), 409)["error"]["code"] == "SESSION_CONFLICT"
+
+            # STARTED -> IN_PROGRESS (page 1, revision 1): voice + media work.
+            checked(client.post(f"/api/v1/reading-sessions/{session_id}/events", headers=headers, json={
+                "eventType": "STARTED", "pageNumber": 1, "expectedRevision": 0, "clientEventId": "start"}), 201)
+            page1_ref = {"readingSessionId": session_id, "pageNumber": 1, "revision": 1}
+            audio1 = checked(client.post("/api/v1/voice/syntheses", json=page1_ref, headers=headers), 201)["data"]["audioUrl"]
+            assert client.get(audio1).content == wav(24000)
+            asr = checked(client.post("/api/v1/voice/transcriptions", data=page1_ref, headers=headers,
+                                      files={"file": ("input.wav", wav(), "audio/wav")}), 200)
+            assert asr["data"]["text"] == "小朋友的回答"
+
+            # PAGE_CHANGED -> page 2, revision 2: stale revision 1 fails, current revision 2 succeeds.
+            checked(client.post(f"/api/v1/reading-sessions/{session_id}/events", headers=headers, json={
+                "eventType": "PAGE_CHANGED", "pageNumber": 2, "expectedRevision": 1, "clientEventId": "page2"}), 201)
+            assert checked(client.post("/api/v1/voice/syntheses", json=page1_ref, headers=headers), 409)["error"]["code"] == "SESSION_CONFLICT"
+            page2_ref = {"readingSessionId": session_id, "pageNumber": 2, "revision": 2}
+            audio2 = checked(client.post("/api/v1/voice/syntheses", json=page2_ref, headers=headers), 201)["data"]["audioUrl"]
+            assert client.get(audio2).content == wav(24000)
+
+            # USER_FINISH -> FINISHED (revision 3): voice synthesis/transcription and cached media reject with 409.
+            done = checked(client.post(f"/api/v1/reading-sessions/{session_id}/completions", headers=headers, json={
+                "reason": "USER_FINISH", "expectedRevision": 2, "clientEventId": "end"}), 200)
+            assert done["data"]["session"]["status"] == "FINISHED" and done["data"]["report"]["status"] == "PENDING"
+            finished_ref = {"readingSessionId": session_id, "pageNumber": 2, "revision": 3}
+            assert checked(client.post("/api/v1/voice/syntheses", json=finished_ref, headers=headers), 409)["error"]["code"] == "SESSION_CONFLICT"
+            assert checked(client.post("/api/v1/voice/transcriptions", data=finished_ref, headers=headers,
+                                       files={"file": ("input.wav", wav(), "audio/wav")}), 409)["error"]["code"] == "SESSION_CONFLICT"
+            assert checked(client.get(audio2), 409)["error"]["code"] == "SESSION_CONFLICT"
+            recovered = checked(client.get(f"/api/v1/reading-sessions/{session_id}"), 200)["data"]
+            assert recovered["session"]["status"] == "FINISHED" and recovered["report"]["status"] == "FAILED"
+    finally:
+        _login_attempts.clear()
