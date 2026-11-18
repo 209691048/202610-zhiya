@@ -1,0 +1,320 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent } from 'vue'
+import { flushPromises, mount } from '@vue/test-utils'
+import ReaderPage from './ReaderPage.vue'
+import { synthesize, transcribe } from '../api/voice'
+
+vi.mock('../api/voice', () => ({ synthesize: vi.fn(), transcribe: vi.fn() }))
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
+const book = { title: '绘本', pageCount: 3, pages: [{ pageNumber: 1, text: '一', defaultNextPageNumber: 3 }, { pageNumber: 3, text: '三', defaultNextPageNumber: 7 }, { pageNumber: 7, text: '七', defaultNextPageNumber: null }] }
+const initialSession = { readingSessionId: 55, currentPage: 1, visitedPageNumbers: [1], revision: 1, status: 'IN_PROGRESS' }
+let wrapper, track, getUserMedia, recorders, audios, showPage
+const button = (text) => wrapper.findAll('button').find((item) => item.text().includes(text))
+
+function render(props = {}) {
+  const FlipStub = defineComponent({ name: 'FlipBook', props: ['startPage'], emits: ['page-change'], setup(_, { expose }) { expose({ showPage }); return () => null } })
+  wrapper = mount(ReaderPage, { props: { book, session: { ...initialSession }, authenticated: true, recordPage: vi.fn().mockResolvedValue(false), completeReading: vi.fn(), refreshReading: vi.fn(), ...props }, global: { stubs: { FlipBook: FlipStub } } })
+  return wrapper
+}
+
+async function startRecording() {
+  await button('语音识别').trigger('click')
+  await wrapper.find('.mic-button').trigger('click')
+  await flushPromises()
+}
+
+async function receiveUnconfirmedTranscript() {
+  transcribe.mockResolvedValueOnce({ text: '小免在哪里？', status: 'RECOGNIZED', reliable: false })
+  render()
+  await startRecording()
+  await wrapper.get('.mic-button').trigger('click')
+  await flushPromises()
+  return wrapper.get('[role="dialog"]')
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  track = { stop: vi.fn() }
+  getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track] })
+  vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+  recorders = []
+  audios = []
+  showPage = vi.fn()
+  vi.stubGlobal('MediaRecorder', class {
+    state = 'inactive'
+    mimeType = 'audio/webm'
+    constructor() { recorders.push(this) }
+    start() { this.state = 'recording' }
+    stop() { this.state = 'inactive'; this.ondataavailable?.({ data: new Blob(['voice']) }); this.onstop?.() }
+  })
+  vi.stubGlobal('Audio', class {
+    constructor(url) { this.url = url; audios.push(this) }
+    pause = vi.fn()
+    play = vi.fn().mockResolvedValue(undefined)
+    removeAttribute = vi.fn()
+    load = vi.fn()
+  })
+  vi.stubGlobal('speechSynthesis', { cancel: vi.fn(), speak: vi.fn() })
+  synthesize.mockResolvedValue({ audioUrl: '/api/v1/media/audio-key' })
+  transcribe.mockResolvedValue({ text: '识别的声音', reliable: true })
+})
+afterEach(() => { wrapper?.unmount(); wrapper = null; vi.unstubAllGlobals() })
+
+describe('recording lifecycle', () => {
+  it('cancels without upload and stops all microphone tracks', async () => {
+    render()
+    await startRecording()
+    expect(recorders[0].state).toBe('recording')
+    await button('取消并关闭').trigger('click')
+    await flushPromises()
+    expect(recorders[0].state).toBe('inactive')
+    expect(track.stop).toHaveBeenCalled()
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('stops a late microphone permission result after cancellation', async () => {
+    const permission = deferred()
+    getUserMedia.mockReturnValueOnce(permission.promise)
+    render()
+    await startRecording()
+    expect(wrapper.find('.mic-button').element.disabled).toBe(true)
+    await button('取消并关闭').trigger('click')
+    permission.resolve({ getTracks: () => [track] })
+    await flushPromises()
+    expect(track.stop).toHaveBeenCalledTimes(1)
+    expect(recorders).toHaveLength(0)
+    expect(transcribe).not.toHaveBeenCalled()
+  })
+
+  it('only submits explicit stop, captures the page snapshot, and ignores a late response', async () => {
+    const recognition = deferred()
+    transcribe.mockReturnValueOnce(recognition.promise)
+    render()
+    await startRecording()
+    await wrapper.find('.mic-button').trigger('click')
+    expect(transcribe).toHaveBeenCalledTimes(1)
+    expect(transcribe.mock.calls[0][1]).toEqual({ readingSessionId: 55, pageNumber: 1, revision: 1 })
+    expect(wrapper.find('.mic-button').element.disabled).toBe(true)
+    await button('取消并关闭').trigger('click')
+    expect(transcribe.mock.calls[0][2].aborted).toBe(true)
+    recognition.resolve({ text: '迟到的结果', reliable: true })
+    await flushPromises()
+    await button('语音识别').trigger('click')
+    expect(wrapper.text()).not.toContain('迟到的结果')
+    expect(track.stop).toHaveBeenCalled()
+  })
+
+  it('does not upload if recording stops without an explicit submit', async () => {
+    render()
+    await startRecording()
+    recorders[0].stop()
+    await flushPromises()
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(track.stop).toHaveBeenCalled()
+  })
+
+  it.each(['page', 'logout', 'unmount'])('cancels a live recording on %s', async (action) => {
+    render()
+    await startRecording()
+    if (action === 'page') await wrapper.setProps({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 } })
+    if (action === 'logout') await wrapper.setProps({ authenticated: false })
+    if (action === 'unmount') { wrapper.unmount(); wrapper = null }
+    expect(track.stop).toHaveBeenCalled()
+    expect(transcribe).not.toHaveBeenCalled()
+  })
+})
+
+describe('parent transcript review', () => {
+  it('displays the corrected text after the parent confirms it', async () => {
+    const dialog = await receiveUnconfirmedTranscript()
+    const editor = dialog.get('textarea')
+    expect(dialog.get('label[for="' + editor.attributes('id') + '"]').text()).toBe('待确认的转写')
+    expect(editor.element.value).toBe('小免在哪里？')
+    expect(dialog.text()).not.toContain('识别到的问题')
+    await editor.setValue('   ')
+    expect(button('确认转写').element.disabled).toBe(true)
+    await editor.setValue('  小兔在哪里？  ')
+    await button('确认转写').trigger('click')
+    expect(dialog.text()).toContain('已确认的转写')
+    expect(dialog.get('.transcript-box p').text()).toBe('小兔在哪里？')
+    expect(dialog.find('textarea').exists()).toBe(false)
+    expect(transcribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows confirmation without editing and clears the result when the dialog closes', async () => {
+    const dialog = await receiveUnconfirmedTranscript()
+    await button('确认转写').trigger('click')
+    expect(dialog.get('.transcript-box p').text()).toBe('小免在哪里？')
+    await dialog.get('.modal-close').trigger('click')
+    await button('语音识别').trigger('click')
+    expect(wrapper.text()).not.toContain('小免在哪里？')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(transcribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces the draft on re-recording and uploads only after the next explicit stop', async () => {
+    const dialog = await receiveUnconfirmedTranscript()
+    await dialog.get('textarea').setValue('上一段草稿')
+    await button('重新录音').trigger('click')
+    await flushPromises()
+    expect(recorders[1].state).toBe('recording')
+    expect(dialog.find('textarea').exists()).toBe(false)
+    expect(transcribe).toHaveBeenCalledTimes(1)
+    await dialog.get('.mic-button').trigger('click')
+    await flushPromises()
+    expect(transcribe).toHaveBeenCalledTimes(2)
+    expect(dialog.text()).toContain('识别到的问题')
+    expect(dialog.text()).toContain('识别的声音')
+    expect(dialog.text()).not.toContain('上一段草稿')
+    expect(button('确认转写')).toBeUndefined()
+  })
+
+  it('discards unconfirmed edits when the reading page changes', async () => {
+    const dialog = await receiveUnconfirmedTranscript()
+    await dialog.get('textarea').setValue('只属于上一页的草稿')
+    await wrapper.setProps({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 } })
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    await button('语音识别').trigger('click')
+    expect(wrapper.text()).not.toContain('只属于上一页的草稿')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(transcribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the editable draft when permission for a replacement recording is denied', async () => {
+    const dialog = await receiveUnconfirmedTranscript()
+    await dialog.get('textarea').setValue('仍可确认的文字')
+    getUserMedia.mockRejectedValueOnce(new Error('permission denied'))
+    await button('重新录音').trigger('click')
+    await flushPromises()
+    expect(dialog.get('[role="alert"]').text()).toContain('麦克风不可用')
+    expect(dialog.get('textarea').element.value).toBe('仍可确认的文字')
+    await button('确认转写').trigger('click')
+    expect(dialog.get('.transcript-box p').text()).toBe('仍可确认的文字')
+    expect(transcribe).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('narration lifecycle', () => {
+  it('pauses the actual player and releases its source', async () => {
+    render()
+    await button('朗读').trigger('click')
+    await flushPromises()
+    expect(audios).toHaveLength(1)
+    await button('暂停朗读').trigger('click')
+    expect(audios[0].pause).toHaveBeenCalledTimes(1)
+    expect(audios[0].removeAttribute).toHaveBeenCalledWith('src')
+    expect(speechSynthesis.cancel).toHaveBeenCalled()
+  })
+
+  it('ignores synthesis returned after cancelling the loading state', async () => {
+    const speech = deferred()
+    synthesize.mockReturnValueOnce(speech.promise)
+    render()
+    await button('朗读').trigger('click')
+    await button('取消朗读').trigger('click')
+    expect(synthesize.mock.calls[0][1].aborted).toBe(true)
+    speech.resolve({ audioUrl: '/late' })
+    await flushPromises()
+    expect(audios).toHaveLength(0)
+  })
+
+  it.each(['page', 'logout', 'unmount'])('releases playback on %s', async (action) => {
+    render()
+    await button('朗读').trigger('click')
+    await flushPromises()
+    if (action === 'page') await wrapper.setProps({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 } })
+    if (action === 'logout') await wrapper.setProps({ authenticated: false })
+    if (action === 'unmount') { wrapper.unmount(); wrapper = null }
+    expect(audios[0].pause).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not silently fall back to browser speech on a backend error', async () => {
+    synthesize.mockRejectedValueOnce(new Error('服务暂不可用'))
+    render()
+    await button('朗读').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('服务暂不可用')
+    expect(speechSynthesis.speak).not.toHaveBeenCalled()
+  })
+})
+
+describe('reader state and visual progress', () => {
+  it.each(['READY', 'FAILED'])('shows the pending facts and refreshes a %s report in place', async (status) => {
+    const refreshReading = vi.fn()
+    const completeReading = vi.fn()
+    render({
+      session: { ...initialSession, status: 'FINISHED' },
+      report: { status: 'PENDING', summary: '事实摘要' }, refreshReading, completeReading,
+    })
+    expect(wrapper.text()).toContain('小结正在生成')
+    expect(wrapper.text()).toContain('事实摘要')
+    await button('刷新小结').trigger('click')
+    expect(refreshReading).toHaveBeenCalledTimes(1)
+    expect(completeReading).not.toHaveBeenCalled()
+    const summary = status === 'READY' ? '最终小结' : '事实摘要'
+    await wrapper.setProps({ report: { status, summary } })
+    expect(wrapper.text()).toContain(status === 'READY' ? '小结已生成' : '小结生成失败')
+    expect(wrapper.text()).toContain(summary)
+    expect(button('刷新小结')).toBeUndefined()
+  })
+
+  it('keeps the displayed page during a report-only refresh', async () => {
+    render({
+      session: { ...initialSession, status: 'FINISHED', currentPage: 3, visitedPageNumbers: [1, 3] },
+      report: { status: 'PENDING', summary: '事实摘要' },
+    })
+    await button('上一页').trigger('click')
+    expect(showPage).toHaveBeenLastCalledWith(0)
+    await button('刷新小结').trigger('click')
+    await flushPromises()
+    expect(showPage).toHaveBeenLastCalledWith(0)
+  })
+
+  it('waits for a confirmed page and rejects a second gesture during the write', async () => {
+    const pending = deferred()
+    const record = vi.fn().mockReturnValue(pending.promise)
+    render({ recordPage: record })
+    await button('下一页').trigger('click')
+    wrapper.findComponent({ name: 'FlipBook' }).vm.$emit('page-change', { storyIndex: 2 })
+    expect(record).toHaveBeenCalledTimes(1)
+    expect(record).toHaveBeenCalledWith(3)
+    expect(showPage).toHaveBeenLastCalledWith(0)
+    await wrapper.setProps({ session: { ...initialSession, currentPage: 3, revision: 2, visitedPageNumbers: [1, 3] } })
+    pending.resolve(true)
+    await flushPromises()
+    expect(showPage).toHaveBeenLastCalledWith(1)
+    expect(wrapper.findComponent({ name: 'FlipBook' }).props('startPage')).toBe(1)
+  })
+
+  it('restores the widget after rejection instead of only changing the page label', async () => {
+    render()
+    wrapper.findComponent({ name: 'FlipBook' }).vm.$emit('page-change', { storyIndex: 1 })
+    await flushPromises()
+    expect(showPage).toHaveBeenLastCalledWith(0)
+    expect(wrapper.findComponent({ name: 'FlipBook' }).props('startPage')).toBe(0)
+  })
+
+  it('allows read-only revisits without writes or voice calls for an old snapshot', async () => {
+    const record = vi.fn()
+    render({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 }, recordPage: record })
+    await button('上一页').trigger('click')
+    expect(wrapper.text()).toContain('回看已读页')
+    expect(button('朗读').element.disabled).toBe(true)
+    expect(record).not.toHaveBeenCalled()
+    await button('下一页').trigger('click')
+    expect(showPage).toHaveBeenLastCalledWith(1)
+    expect(record).not.toHaveBeenCalled()
+    expect(button('朗读').element.disabled).toBe(false)
+  })
+
+  it('marks unintegrated interactions unavailable and unknown progress as pending', () => {
+    render({ syncRequired: true })
+    expect(button('已理解').element.disabled).toBe(true)
+    expect(button('还没懂').element.disabled).toBe(true)
+    expect(button('下一页').element.disabled).toBe(true)
+    expect(button('朗读').element.disabled).toBe(true)
+    expect(wrapper.text()).toContain('进度待确认')
+    expect(button('确认并同步进度')).toBeDefined()
+  })
+})
