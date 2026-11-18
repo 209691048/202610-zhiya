@@ -1,13 +1,11 @@
-"""Read-only guardian bookshelf; child grants and media delivery are future work."""
+"""Read-only bookshelf for guardians and scoped child grants."""
 
 import sqlite3
-from contextlib import closing
 from typing import Literal
 
 from fastapi import APIRouter, Path, Query, Request
 
-from app.api.v1.auth import connect, error
-from app.api.v1.profiles import guardian
+from app.api.v1.auth import authorized_db, error
 
 router = APIRouter(prefix="/api/v1")
 AgeBand = Literal["AGE_3_4", "AGE_4_5", "AGE_5_6"]
@@ -50,13 +48,16 @@ def list_storybooks(request: Request, age_band: AgeBand | None = Query(default=N
                     page: int = Query(default=1, ge=1, le=9007199254740991),
                     page_size: int = Query(default=20, ge=1, le=50, alias="pageSize")):
     try:
-        with closing(connect()) as db:
-            db.execute("BEGIN")
-            owner, failure = guardian(db, request, write=False)
+        with authorized_db(request) as (db, principal, failure):
             if failure:
                 return failure
+            if principal.role == "CHILD" and scope == "mine":
+                return error(request, 403, "FORBIDDEN", "儿童模式不支持查看个人历史书架")
             conditions = [VISIBLE]
-            params = [owner, scope == "mine", owner]
+            params = [principal.guardian_id, scope == "mine", principal.guardian_id]
+            if principal.role == "CHILD":
+                conditions.append("EXISTS (SELECT 1 FROM child_grant_books gb WHERE gb.grant_id = ? AND gb.version_id = v.id)")
+                params.append(principal.grant_id)
             if age_band:
                 low, high = AGES[age_band]
                 conditions.append("v.age_min <= ? AND v.age_max >= ?")
@@ -80,19 +81,32 @@ def list_storybooks(request: Request, age_band: AgeBand | None = Query(default=N
 @router.get("/story-versions/{version_id}")
 def get_story_version(request: Request, version_id: int = Path(ge=1, le=9007199254740991)):
     try:
-        with closing(connect()) as db:
-            db.execute("BEGIN")
-            owner, failure = guardian(db, request, write=False)
+        with authorized_db(request) as (db, principal, failure):
             if failure:
                 return failure
+            grant_filter = (
+                "AND EXISTS (SELECT 1 FROM child_grant_books gb WHERE gb.grant_id = ? AND gb.version_id = v.id) "
+                if principal.role == "CHILD" else ""
+            )
+            active_session_filter = (
+                "EXISTS (SELECT 1 FROM reading_sessions s WHERE s.version_id = v.id AND s.grant_id = ? "
+                "AND s.profile_id = ? AND s.status IN ('CREATED', 'IN_PROGRESS'))"
+                if principal.role == "CHILD"
+                else "EXISTS (SELECT 1 FROM reading_sessions s JOIN child_profiles p ON p.id = s.profile_id "
+                     "WHERE s.version_id = v.id AND p.guardian_id = ? AND s.status IN ('CREATED', 'IN_PROGRESS'))"
+            )
+            params = (
+                (version_id, principal.grant_id, principal.guardian_id, True, principal.guardian_id,
+                 principal.grant_id, principal.profile_id)
+                if principal.role == "CHILD"
+                else (version_id, principal.guardian_id, True, principal.guardian_id, principal.guardian_id)
+            )
             row = db.execute(
                 "SELECT v.* FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id "
-                "WHERE v.id = ? AND (" + VISIBLE +
+                f"WHERE v.id = ? {grant_filter}AND (" + VISIBLE +
                 " OR (v.status = 'RETIRED' AND v.reviewed_by_id IS NOT NULL AND v.reviewed_at IS NOT NULL "
-                "AND b.source_type = 'LIBRARY' "
-                "AND EXISTS (SELECT 1 FROM reading_sessions s JOIN child_profiles p ON p.id = s.profile_id "
-                "WHERE s.version_id = v.id AND p.guardian_id = ? AND s.status IN ('CREATED', 'IN_PROGRESS'))))",
-                (version_id, owner, True, owner, owner),
+                f"AND b.source_type = 'LIBRARY' AND {active_session_filter}))",
+                params,
             ).fetchone()
             if not row:
                 return error(request, 404, "RESOURCE_NOT_FOUND", "绘本不可用")

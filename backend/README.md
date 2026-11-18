@@ -14,7 +14,7 @@
 | UTF-8 | Unicode 转换格式（Unicode Transformation Format，8-bit） |
 | MiB | 二进制兆字节（Mebibyte），1 MiB = 1,048,576 字节 |
 
-截至 2026-11-17，已接入 IF-02 内部文本模型、API-032 就绪检查、录音格式转换、API-022/023 语音路由及 API-024 音频分支。家长账号、档案和绘本读取已实现，语音默认复用真实家长 Cookie/CSRF 认证；API-011/012/013 共读会话创建与查询、API-015 开始/翻页、API-019 结束及小结生成已实现，开始/翻页/结束使用持久化的会话内幂等记录。儿童模式认证、图片媒体、声线/语速偏好存储、知识检索、问答与引导、内容审核和完整业务链路仍须协作，不计为 G08 整体验收通过。语音实名分工和验证见[语音接口交接](../docs/design/voice-api-handoff.md)及[检验记录](../docs/testing/voice-api-checks.md)。
+截至 2026-11-18，已接入 IF-02 内部文本模型、API-032 就绪检查、录音格式转换、API-022/023 语音路由及 API-024 音频分支。家长账号、档案和绘本读取已实现，API-020/021 已支持儿童限时授权和家长密码解锁，语音按当前家长身份或儿童授权校验。API-011/012/013 共读会话创建与查询、API-015 开始/翻页、API-019 结束及小结生成已实现，开始/翻页/结束使用持久化的会话内幂等记录。图片媒体、声线/语速偏好存储、知识检索、问答与引导、内容审核和完整业务链路仍须协作，不计为 G08 整体验收通过。语音实名分工和验证见[语音接口交接](../docs/design/voice-api-handoff.md)及[检验记录](../docs/testing/voice-api-checks.md)。
 
 接口以[当前契约](../docs/design/api-contract.md)及其 JSON 示例为准；[验证记录](../docs/testing/backend-bootstrap-checks.md)说明本轮实际验证范围。
 
@@ -40,9 +40,9 @@ Linux/macOS 对应使用 python3.12 创建环境、.venv/bin/python 安装；进
 {"data":{"status":"ok"},"requestId":"服务端生成的追踪标识"}
 ```
 
-X-Request-ID 响应头与响应体一致。/docs 可查看健康、账号、档案、绘本、阅读会话及语音/音频路由。默认应用使用真实家长认证；数据库就绪时，未登录返回 401 AUTH_REQUIRED，缺失或错误 CSRF 的语音写请求返回 403 CSRF_INVALID。显式注入 UnconfiguredVoiceAuthenticator 时仍返回 503 VOICE_AUTH_NOT_CONFIGURED。默认绑定本机、单工作进程。容器包含 FFmpeg；Windows 转换非标准录音需要 PATH 中可用的 FFmpeg。
+X-Request-ID 响应头与响应体一致。/docs 可查看健康、账号、档案、绘本、阅读会话及语音/音频路由。默认应用使用家长会话或儿童授权进行认证。数据库就绪时，未登录返回 401 AUTH_REQUIRED，缺失或错误 CSRF 的语音写请求返回 403 CSRF_INVALID。显式注入 UnconfiguredVoiceAuthenticator 时仍返回 503 VOICE_AUTH_NOT_CONFIGURED。默认绑定本机、单工作进程。容器包含 FFmpeg；Windows 转换非标准录音需要 PATH 中可用的 FFmpeg。
 
-家长联调：先 POST `/api/v1/auth/registrations` 注册，再 POST `/api/v1/auth/sessions` 登录，两者传 `{account,password}`。客户端保留登录返回的 Cookie，将 `zhiya_csrf` 值放入写请求的 `X-CSRF-Token`；`zhiya_session` 为 HttpOnly，不自行读取或构造。Cookie 有 Secure 属性，应使用 HTTPS（本地需 HTTPS 代理或证书），上面的 HTTP 启动命令仅适合健康检查等无凭据请求。跨域浏览器联调尚未配置 CORS。创建本人档案并取得有权读取的已审核绘本版本后，可 POST `/api/v1/reading-sessions`，传 `{childProfileId,storyVersionId,mode:"PARENT_CHILD"}`；再向 `/{session_id}/events` 提交 STARTED 事件。API-022/023 使用返回的真实会话、当前页和最新 revision 或允许的已保存事件，具体字段见接口契约。会话生命周期的离线联调见 `backend/tests/test_storybooks.py`；`backend/tests/test_voice_auth_integration.py` 验证真实家长认证与模拟供应商，其中会话由测试准备。完整浏览器及真实供应商组合流程仍须联调。
+家长联调：先 POST `/api/v1/auth/registrations` 注册，再 POST `/api/v1/auth/sessions` 登录，两者传 `{account,password}`。客户端保留登录返回的 Cookie，将 `zhiya_csrf` 值放入写请求的 `X-CSRF-Token`；`zhiya_session` 为 HttpOnly，不自行读取或构造。Cookie 有 Secure 属性，应使用 HTTPS（本地需 HTTPS 代理或证书），上面的 HTTP 启动命令仅适合健康检查等无凭据请求。跨域浏览器联调尚未配置 CORS。创建本人档案并取得有权读取的已审核绘本版本后，可 POST `/api/v1/reading-sessions`，传 `{childProfileId,storyVersionId,mode:"PARENT_CHILD"}`；再向 `/{session_id}/events` 提交 STARTED 事件。API-022/023 使用返回的真实会话、当前页和最新 revision 或允许的已保存事件，具体字段见接口契约。会话生命周期的离线联调见 `backend/tests/test_storybooks.py`；`backend/tests/test_voice_auth_integration.py` 验证真实家长认证与模拟供应商，其中会话由测试准备。儿童模式联调在会话开始前调用 API-020 切换设备身份。恢复家长权限时，通过 API-021 提交所属家长凭证和当前 CSRF 令牌。到期、解锁和多设备退出见 `backend/tests/test_child_mode.py`。完整浏览器及真实供应商组合流程仍须联调。
 
 阅读小结（FR-09、AI-06、NFR-09）：事实摘要仅取服务端记录的已读页；模型根据已读正文选择固定建议编号，不直接发布模型自由文本。非法结构、额外字段、未知建议、模型失败或超长结果均置 FAILED，保留事实摘要和空 activities，不重试模型。READY 由事实摘要与固定的自愿共读建议组成，不推断答题数、投入程度或儿童能力。当前 activities 仍为空，尚未完成 FR-10/AC-09 要求的含材料与步骤的亲子活动。设计与离线证据见[本轮检验记录](../docs/testing/report-safety-checks.md)。
 

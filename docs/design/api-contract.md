@@ -2,7 +2,9 @@
 
 版本：v0.4；配套系统、数据库设计v1.1；状态：待团队评审。
 
-服务端Cookie使用Secure/HttpOnly/SameSite=Lax，写入验证CSRF。进入儿童模式时同事务吊销当前设备家长auth_sessions、签发child_grants及版本范围并绑定会话。退出须重新验证账号密码，撤销儿童授权并签发全新家长凭证；旧家长凭证不恢复。
+会话 Cookie `zhiya_session` 使用 Secure、HttpOnly 和 SameSite=Lax。受保护的写请求须在 `X-CSRF-Token` 中提交可读 Cookie `zhiya_csrf` 的值。进入儿童模式时，在同一事务内吊销当前设备的家长 auth_sessions、签发 child_grants 及版本范围并绑定会话。恢复家长权限时重新验证账号密码，撤销儿童授权并签发全新家长凭证。
+
+儿童设备的 Cookie 保留 24 小时。业务访问到 `expiresAt` 截止。持有未吊销儿童凭证的设备使用 API-021 验证所属家长密码，业务时限届满后仍可解锁。此时调用普通登录 API-002 返回 403 `FORBIDDEN`。
 
 公共术语、标识语义与枚举见[公共术语表](../standards/glossary.md)。详细请求响应、错误及幂等规则见[接口示例](api-contract-v0.4.json)。
 
@@ -52,7 +54,7 @@
 | 接口 | 请求字段 | 成功响应 `data` |
 | --- | --- | --- |
 | API-001 / 002 注册与登录 | `account`、`password` 必填字符串。建议账号去除两端空白后 3～64 字符并保持大小写，密码 8～128 字符且原样提交 | 201，`accountId` |
-| API-003 退出 | 无请求体 | 204 |
+| API-003 退出 | 无请求体。家长退出会撤销本机家长登录及该账号名下全部儿童授权，其他设备的家长登录继续有效。儿童退出只撤销当前儿童授权 | 204 |
 | API-004 档案列表 | 无请求体 | 200，`items` 为档案对象数组 |
 | API-005 新建档案 | `ageBand`、`preferredMinutes` 必填，`nickname` 和 `interests` 可省略 | 201，档案对象 |
 | API-006 修改档案 | 路径 `profile_id`。至少提供 `nickname`、`ageBand`、`interests`、`preferredMinutes` 之一，省略字段保留原值 | 200，更新后的完整档案对象 |
@@ -125,6 +127,8 @@ JSON 错误统一使用 `{error: {code, message, retryable}, requestId}`。前�
 用户范围确认已记录；组长确认及设计PR审核、合并仍待实际完成，不以本文代替正式审批。
 
 ## 小结、历史版本与知识修订
+
+儿童模式按服务端时限结算。家长的请求仅处理本人家庭，儿童的请求仅处理当前授权。会话已开始且绘本仍可读时，到期记为 `FINISHED / TIME_LIMIT`，结束时间取授权截止时刻。在提交终态、事实和小结后才派发模型任务。待开始会话到期记为 `INTERRUPTED / GRANT_REVOKED`。若未终结会话的绘本已撤回，记为 `INTERRUPTED / CONTENT_WITHDRAWN`。这两种中断均不生成小结。API-013 为儿童返回绑定会话当前页的事件和 `report=null`，家长可查看本人会话的全部事件及小结。
 
 首次结束阅读在同一事务保存会话终态、事实记录、PENDING小结和供同键重放的原响应。事务外按既有文本模型调用超时生成；仅当小结仍为PENDING时，成功置READY，确定失败置FAILED并保留事实摘要。
 首版单工作进程启动或重启时，在应用就绪前将遗留的PENDING小结条件更新为FAILED，保留事实摘要并将activities置为空数组。恢复不调用模型，保留会话终态、事实记录及原结束响应。

@@ -54,6 +54,9 @@
 | `StoryVersion.status` | `APPROVED_PRIVATE` | 经所属家长批准的私有版本。 |
 | `StoryVersion.status` | `RETIRED` | 退出当前默认列表，历史访问按来源和授权校验。 |
 | `StoryVersion.status` | `WITHDRAWN` | 已撤回，停止版本内容和媒体访问。 |
+| `ReadingSession.endReason` | `TIME_LIMIT` | 已开始的儿童阅读达到授权截止时刻，正常完成。 |
+| `ReadingSession.endReason` | `GRANT_REVOKED` | 儿童会话失去阅读授权而中断，包括尚未开始就达到授权期限。到期儿童凭证仍可供所属家长验证密码解锁。 |
+| `ReadingSession.endReason` | `CONTENT_WITHDRAWN` | 未终结的阅读因其固定版本被撤回而中断。 |
 | `KnowledgeItem.status` | `DRAFT` | 知识草稿，供管理审核。 |
 | `KnowledgeItem.status` | `APPROVED` | 当前可用于领域知识检索的审核版本。同一 `itemKey` 至多一版。 |
 | `KnowledgeItem.status` | `RETIRED` | 停止参与新检索，保留历史引用。 |

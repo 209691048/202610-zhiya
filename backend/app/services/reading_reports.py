@@ -14,10 +14,10 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
+from uuid import uuid4
 
-from app.api.v1.auth import connect
 from app.core.config import database_path
-from app.db.connection import database_ready
+from app.db.connection import connect, database_ready
 
 logger = logging.getLogger("zhiya.reports")
 MAX_SUMMARY_CHARS = 500
@@ -157,3 +157,91 @@ def recover_pending_reports() -> bool:
     """Single-worker startup recovery called by lifespan before readiness."""
     reset_recovery_state()
     return ensure_startup_recovered()
+
+
+def unsettled_sessions(db, guardian_id: int, grant_id: int | None, now: int):
+    """Only inspect sessions in the authenticated family or the narrower child grant."""
+    sql = """SELECT s.id, s.status, s.version_id, s.visited_pages_json, g.expires_at,
+                    v.status AS version_status
+             FROM child_profiles p
+             JOIN reading_sessions s ON s.profile_id = p.id
+             JOIN child_grants g ON g.id = s.grant_id
+             JOIN story_versions v ON v.id = s.version_id
+             WHERE p.guardian_id = ? AND g.revoked_at IS NULL
+               AND s.status IN ('CREATED', 'IN_PROGRESS')
+               AND (g.expires_at <= ? OR v.status = 'WITHDRAWN')"""
+    params = [guardian_id, now]
+    if grant_id is not None:
+        sql += " AND g.id = ?"
+        params.append(grant_id)
+    return db.execute(sql, params)
+
+
+def settle_grant_sessions(db, guardian_id: int, grant_id: int | None, now: int):
+    """Called with the write lock held. The caller dispatches jobs only after commit."""
+    pending: list[tuple[int, str, list[str], str]] = []
+    for row in unsettled_sessions(db, guardian_id, grant_id, now).fetchall():
+        sid = row["id"]
+        if row["version_status"] == "WITHDRAWN" or row["status"] == "CREATED":
+            reason = "CONTENT_WITHDRAWN" if row["version_status"] == "WITHDRAWN" else "GRANT_REVOKED"
+            db.execute(
+                """UPDATE reading_sessions SET status = 'INTERRUPTED', end_reason = ?,
+                   ended_at = ?, revision = revision + 1 WHERE id = ?""",
+                (reason, min(now, row["expires_at"]), sid),
+            )
+            continue
+        db.execute(
+            """UPDATE reading_sessions
+               SET status = 'FINISHED', end_reason = 'TIME_LIMIT', ended_at = ?, revision = revision + 1
+               WHERE id = ?""",
+            (row["expires_at"], sid),
+        )
+        visited = json.loads(row["visited_pages_json"])
+        facts = fact_summary(visited)
+        inserted = db.execute(
+            """INSERT OR IGNORE INTO reading_reports (session_id, status, summary, activities_json, updated_at)
+               VALUES (?, 'PENDING', ?, '[]', ?)""",
+            (sid, facts, now),
+        )
+        if inserted.rowcount != 1:
+            continue
+        generation_token = str(uuid4())
+        db.execute(
+            """INSERT INTO request_executions
+               (owner_account_id, session_id, scope_type, scope_id, client_request_id, request_digest,
+                status, execution_token, started_at, deadline_at, completed_at, response_status, response_body)
+               VALUES (?, ?, 'SESSION_EVENT', ?, ?, '__time_limit__', 'SUCCEEDED', ?, ?, ?, ?, 200, '{}')""",
+            (
+                guardian_id,
+                sid,
+                sid,
+                f"__time_limit__:{sid}:{generation_token[:16]}",
+                generation_token,
+                now,
+                now + 25000,
+                now,
+            ),
+        )
+        pages = list(dict.fromkeys(visited))
+        texts = [
+            r[0]
+            for r in db.execute(
+                "SELECT body_text FROM story_pages WHERE version_id = ? AND page_no IN (%s) ORDER BY page_no"
+                % ",".join("?" * len(pages)),
+                (row["version_id"], *pages),
+            )
+        ] if pages else []
+        pending.append((sid, facts, texts, generation_token))
+    return pending
+
+
+def queue_deferred_reports(request, pending: list[tuple[int, str, list[str], str]]) -> None:
+    if request is None or not pending:
+        return
+    queue = getattr(request.state, "deferred_reports", None)
+    if queue is None:
+        queue = []
+        request.state.deferred_reports = queue
+    adapter = getattr(request.app.state, "model_adapter", None)
+    for sid, facts, texts, gen_token in pending:
+        queue.append((generate_report, (sid, facts, texts, adapter), {"generation_token": gen_token}))

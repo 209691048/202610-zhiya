@@ -4,7 +4,7 @@
   "glossary": "../standards/glossary.md",
   "note": "所有示例为格式数据，不是真实模型输出、凭证或测试结果。",
   "common": {
-    "authentication": "服务端Cookie使用Secure/HttpOnly/SameSite=Lax，写入验证CSRF。进入儿童模式时同事务吊销当前设备家长auth_sessions、签发child_grants及版本范围并绑定会话。退出须重新验证账号密码，撤销儿童授权并签发全新家长凭证；旧家长凭证不恢复。",
+    "authentication": "会话 Cookie zhiya_session 使用 Secure、HttpOnly 和 SameSite=Lax。受保护的写请求须在 X-CSRF-Token 中提交可读 Cookie zhiya_csrf 的值。进入儿童模式时，在同一事务内吊销当前设备的家长 auth_sessions、签发 child_grants 及版本范围并绑定会话。恢复家长权限时重新验证账号密码，撤销儿童授权并签发全新家长凭证。",
     "ownership": "私有资源每次执行归属校验；非本人统一404。",
     "pagination": {
       "defaultPageSize": 20,
@@ -1081,7 +1081,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "成功设置服务端会话Cookie；错误凭证401，重复失败限流。",
+      "constraints": "成功设置服务端会话 Cookie。错误凭证返回 401，重复失败限流。持有未吊销儿童凭证时返回 403 FORBIDDEN，请使用 API-021 验证所属家长密码。",
       "interfaceId": "API-002",
       "uniqueKey": "POST /api/v1/auth/sessions"
     },
@@ -1096,7 +1096,7 @@
       "successStatus": 204,
       "responseExample": null,
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "吊销当前登录和儿童授权。",
+      "constraints": "家长退出撤销当前设备的家长登录及该账号名下全部儿童授权，其他设备的家长登录继续有效。儿童退出只撤销当前授权。先结算已到期或内容已撤回的会话，再中断仍未终结的会话。",
       "interfaceId": "API-003",
       "uniqueKey": "DELETE /api/v1/auth/sessions/current"
     },
@@ -1508,7 +1508,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "儿童只返回当前进度、可读页面与必要交互，不返回完整历史、管理或个人资料。内容读取遵守common.versionAccess。本人家长可读取当前小结，包括启动恢复后的小结；状态及返回内容见common.reportLifecycle。",
+      "constraints": "儿童仅接收绑定会话的当前进度和当前页事件，report 为 null。本人家长可读取会话的全部事件及当前小结，包括启动恢复后的小结。内容读取遵守 common.versionAccess，小结状态见 common.reportLifecycle。",
       "interfaceId": "API-013",
       "uniqueKey": "GET /api/v1/reading-sessions/{session_id}",
       "additionalExamples": [
@@ -1797,7 +1797,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "首次结束同事务保存终态、事实记录及PENDING小结。生成、启动恢复及重复结束规则见common.reportLifecycle；用API-013读取最新状态。TIME_LIMIT由服务端触发；CONTINUED仅由续写切换事务设置，客户端不得提交该reason。",
+      "constraints": "首次正常结束同事务保存终态、事实记录及 PENDING 小结，提交成功后派发模型任务。生成、恢复及重复结束见 common.reportLifecycle。儿童阅读已开始且内容可读时，到期按授权截止时刻写 FINISHED/TIME_LIMIT。未开始即到期写 INTERRUPTED/GRANT_REVOKED，未终结时发现内容撤回写 INTERRUPTED/CONTENT_WITHDRAWN，中断不生成小结。TIME_LIMIT 与续写切换的 CONTINUED 均由服务端设置。",
       "interfaceId": "API-019",
       "uniqueKey": "POST /api/v1/reading-sessions/{session_id}/completions",
       "examplePrecondition": "本例承接API-011创建的会话401（CREATED、revision=0、路径[]）。通过API-015提交STARTED后为IN_PROGRESS、currentPage=1、visitedPageNumbers=[1]、revision=1；此时立即主动结束，没有发生其他互动或翻页。"
@@ -1852,7 +1852,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "验证账号密码及儿童授权归属；原子撤销儿童授权，结束未终态会话，创建新家长auth_sessions并设置Cookie。旧家长凭证不恢复；失败401且不提权。",
+      "constraints": "验证所属家长账号密码和 CSRF。儿童 Cookie 保留 24 小时，业务授权到期后，持有未吊销凭证的设备仍可解锁。成功时原子撤销儿童授权，结束未终态会话并签发新家长 Cookie。密码错误返回 401。",
       "interfaceId": "API-021",
       "uniqueKey": "POST /api/v1/auth/parent-unlocks"
     },
