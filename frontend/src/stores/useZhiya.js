@@ -23,7 +23,7 @@ function parseRoute() {
   return { name: 'home' }
 }
 
-const savedProfileId = Number(localStorage.getItem('zhiya.activeProfileId') || 0)
+const savedProfileId = localStorage.getItem('zhiya.activeProfileId')
 const savedNickname = localStorage.getItem('zhiya.guardianNickname') || '知芽家长'
 
 const state = reactive({
@@ -37,11 +37,12 @@ const state = reactive({
     nickname: savedNickname,
   },
   profiles: [],
-  activeProfileId: savedProfileId,
+  activeProfileId: savedProfileId === null ? null : Number(savedProfileId),
   books: previewBooks,
   booksSource: 'preview',
   booksLoading: false,
   booksError: '',
+  nextBooksPage: null,
   bookFilters: { ageBand: '', topic: '' },
   selectedBookId: localStorage.getItem('zhiya.selectedBookId') || previewBooks[0].id,
   currentBook: null,
@@ -59,6 +60,7 @@ const state = reactive({
 
 let toastTimer = null
 let authEpoch = 0
+let profilesRequest = 0
 let booksRequest = 0
 let detailRequest = 0
 let sessionsRequest = 0
@@ -67,7 +69,7 @@ let pendingReading = null
 
 function clearAccountData() {
   state.profiles = []
-  state.activeProfileId = 0
+  state.activeProfileId = null
   state.sessions = []
   state.currentBook = null
   state.currentSession = null
@@ -92,7 +94,7 @@ function resetAuthentication() {
 }
 
 function activeProfile() {
-  return state.profiles.find((profile) => profile.childProfileId === state.activeProfileId) || state.profiles[0] || null
+  return state.profiles.find((profile) => profile.childProfileId === state.activeProfileId) || null
 }
 
 function setToast(message, tone = 'info') {
@@ -128,6 +130,7 @@ function applyBooks(items, source, message = '') {
 }
 
 function loadPreviewBooks(message = '') {
+  state.nextBooksPage = null
   const { ageBand, topic } = state.bookFilters
   const filtered = previewBooks.filter((book) => {
     if (ageBand && book.ageBand !== ageBand) return false
@@ -137,10 +140,16 @@ function loadPreviewBooks(message = '') {
   applyBooks(filtered, 'preview', message)
 }
 
-async function loadBooks(filters = {}) {
+function loadBooks(filters = {}) {
+  state.bookFilters = { ...state.bookFilters, ...filters }
+  state.nextBooksPage = null
+  return fetchBooksPage(1)
+}
+
+async function fetchBooksPage(page) {
   const epoch = authEpoch
   const request = ++booksRequest
-  state.bookFilters = { ...state.bookFilters, ...filters }
+  const pageSize = 30
   state.booksLoading = true
   state.booksError = ''
   try {
@@ -151,8 +160,18 @@ async function loadBooks(filters = {}) {
     const items = await listStorybooks({
       ageBand: state.bookFilters.ageBand || undefined,
       topic: state.bookFilters.topic || undefined,
+      page,
+      pageSize,
     })
     if (epoch !== authEpoch || request !== booksRequest) return
+    state.nextBooksPage = items.length === pageSize ? page + 1 : null
+    if (page > 1) {
+      const existing = new Set(state.books.map((book) => book.storyVersionId))
+      const added = items.filter((book) => !existing.has(book.storyVersionId)).map(mapApiBook)
+      applyBooks([...state.books, ...added], 'api')
+      if (added.length) selectBook(added[0].id)
+      return
+    }
     if (!items.length && !state.bookFilters.ageBand && !state.bookFilters.topic) {
       loadPreviewBooks('后端当前没有可见的已发布绘本，当前展示本地设计预览。')
       return
@@ -163,6 +182,8 @@ async function loadBooks(filters = {}) {
     if (error instanceof ApiError && error.status === 401) {
       resetAuthentication()
       loadPreviewBooks('登录后读取后端绘本，当前展示本地设计预览。')
+    } else if (state.nextBooksPage !== null) {
+      state.booksError = error.message || '书架加载失败，请重试。'
     } else {
       loadPreviewBooks(error.message || '绘本列表暂时不可用，已切换到本地预览。')
     }
@@ -171,13 +192,39 @@ async function loadBooks(filters = {}) {
   }
 }
 
+function loadMoreBooks() {
+  if (!state.booksLoading && state.nextBooksPage && state.auth.status === 'authenticated') {
+    return fetchBooksPage(state.nextBooksPage)
+  }
+}
+
+function refreshShelfAfterNotFound() {
+  if (state.booksLoading && state.nextBooksPage === null) {
+    // The old shelf may still be visible while a new filter's first page loads.
+    return loadBooks()
+  }
+  state.nextBooksPage = 1
+  return fetchBooksPage(1)
+}
+
 async function loadProfiles() {
   const epoch = authEpoch
-  const items = await listProfiles()
-  if (epoch !== authEpoch) return []
+  const request = ++profilesRequest
+  const isCurrent = () => epoch === authEpoch && request === profilesRequest
+  let items
+  try {
+    items = await listProfiles()
+  } catch (error) {
+    if (!isCurrent()) return null
+    throw error
+  }
+  if (!isCurrent()) return null
   state.profiles = items
-  if (!items.some((profile) => profile.childProfileId === state.activeProfileId)) {
+  // Only a new login defaults to the first child. A removed selection needs a guardian's choice.
+  if (state.activeProfileId === null) {
     state.activeProfileId = items[0]?.childProfileId || 0
+  } else if (!items.some((profile) => profile.childProfileId === state.activeProfileId)) {
+    state.activeProfileId = 0
   }
   localStorage.setItem('zhiya.activeProfileId', String(state.activeProfileId))
   return items
@@ -318,8 +365,10 @@ async function loadDetail(versionId) {
   } catch (error) {
     if (!isCurrent()) return
     if (error.status === 404 && state.booksSource === 'api') {
-      applyBooks(state.books.filter((book) => book.storyVersionId !== Number(versionId)), 'api')
-      if (state.booksLoading) void loadBooks()
+      const remaining = state.books.filter((book) => book.storyVersionId !== Number(versionId))
+      const removed = remaining.length < state.books.length
+      applyBooks(remaining, 'api')
+      if (removed || state.booksLoading) void refreshShelfAfterNotFound()
     }
     setToast(describeApiError(error), 'error')
   } finally {
@@ -348,10 +397,12 @@ async function startReading(book) {
   }
   const profile = activeProfile()
   if (!profile) {
-    setToast('请先为孩子创建阅读档案', 'error')
+    setToast(state.profiles.length ? '请先选择本次阅读使用的儿童档案' : '请先为孩子创建阅读档案', 'error')
     navigate('account/children')
     return
   }
+  // A new shelf query replaces the filters object; loading another page keeps it.
+  const filtersAtStart = state.bookFilters
   try {
     state.sessionBusy = true
     const created = await createReadingSession({
@@ -362,7 +413,22 @@ async function startReading(book) {
     state.currentSession = created
     navigate(`reader/${created.readingSessionId}`)
   } catch (error) {
-    if (epoch === authEpoch) setToast(describeApiError(error), 'error')
+    if (epoch !== authEpoch) return
+    if (error.status === 404) {
+      // API-011 returns the same 404 for an unavailable profile or book.
+      const profiles = await loadProfiles().catch((lookupError) => {
+        if (epoch === authEpoch) setToast(describeApiError(lookupError), 'error')
+        return null
+      })
+      if (!profiles || epoch !== authEpoch) return
+      if (!profiles.some((item) => item.childProfileId === profile.childProfileId)) {
+        if (activeProfile()) return
+        setToast(profiles.length ? '原儿童档案已失效，请到个人中心重新选择儿童档案。' : '原儿童档案已失效，请先添加儿童档案。', 'error')
+        return
+      }
+      if (state.booksSource === 'api' && state.bookFilters === filtersAtStart) void refreshShelfAfterNotFound()
+    }
+    setToast(describeApiError(error), 'error')
   } finally {
     if (epoch === authEpoch) state.sessionBusy = false
   }
@@ -637,6 +703,7 @@ export const zhiyaActions = {
   editProfile,
   loadProfiles,
   loadBooks,
+  loadMoreBooks,
   selectBook,
   openDetail,
   loadDetail,

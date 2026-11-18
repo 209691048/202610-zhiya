@@ -7,11 +7,12 @@ const props = defineProps({
   books: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' },
   loading: { type: Boolean, default: false },
+  nextPage: { type: Number, default: null },
   source: { type: String, default: 'preview' },
   error: { type: String, default: '' },
 })
 
-const emit = defineEmits(['select', 'detail', 'start', 'filter', 'login'])
+const emit = defineEmits(['select', 'detail', 'start', 'filter', 'login', 'more'])
 const category = ref('')
 
 const ageOptions = [
@@ -66,7 +67,7 @@ function chooseFilter(value) {
           </p>
         </aside>
 
-        <div v-if="loading" class="library-feature-card">
+        <div v-if="loading && nextPage === null" class="library-feature-card">
           <div class="library-feature-cover skeleton" />
           <div><div class="skeleton" style="height:22px;width:46%" /><div class="skeleton" style="height:38px;width:68%;margin-top:13px" /></div>
         </div>
@@ -92,6 +93,13 @@ function chooseFilter(value) {
         </div>
       </div>
       <BookCarousel v-if="books.length" :books="books" :selected-id="selected?.id" @select="emit('select', $event)" />
+      <div v-if="nextPage !== null">
+        <p v-if="error" role="alert">{{ error }}</p>
+        <button class="secondary" type="button" :disabled="loading" @click="emit('more')">
+          <template v-if="loading">正在加载…</template>
+          <template v-else>{{ nextPage === 1 ? '重新加载书架' : '加载更多绘本' }}</template>
+        </button>
+      </div>
     </div>
   </main>
 </template>

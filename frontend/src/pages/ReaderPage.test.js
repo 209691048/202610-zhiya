@@ -11,9 +11,9 @@ const initialSession = { readingSessionId: 55, currentPage: 1, visitedPageNumber
 let wrapper, track, getUserMedia, recorders, audios, showPage
 const button = (text) => wrapper.findAll('button').find((item) => item.text().includes(text))
 
-function render(props = {}) {
+function render(props = {}, useRealFlipBook = false) {
   const FlipStub = defineComponent({ name: 'FlipBook', props: ['startPage'], emits: ['page-change'], setup(_, { expose }) { expose({ showPage }); return () => null } })
-  wrapper = mount(ReaderPage, { props: { book, session: { ...initialSession }, authenticated: true, recordPage: vi.fn().mockResolvedValue(false), completeReading: vi.fn(), refreshReading: vi.fn(), ...props }, global: { stubs: { FlipBook: FlipStub } } })
+  wrapper = mount(ReaderPage, { props: { book, session: { ...initialSession }, authenticated: true, recordPage: vi.fn().mockResolvedValue(false), completeReading: vi.fn(), refreshReading: vi.fn(), ...props }, global: { stubs: { FlipBook: useRealFlipBook ? false : FlipStub } } })
   return wrapper
 }
 
@@ -126,6 +126,31 @@ describe('recording lifecycle', () => {
 })
 
 describe('parent transcript review', () => {
+  it.each(['direct', 'denied', 'unsupported'])('accepts a local typed question with %s input', async (entry) => {
+    render()
+    if (entry === 'direct') {
+      await button('输入文字').trigger('click')
+    } else {
+      if (entry === 'denied') getUserMedia.mockRejectedValueOnce(new Error('permission denied'))
+      if (entry === 'unsupported') vi.stubGlobal('MediaRecorder', undefined)
+      await startRecording()
+    }
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.get('label').text()).toBe('输入问题')
+    expect(button('确认文字').element.disabled).toBe(true)
+    await dialog.get('textarea').setValue('  小兔回家了吗？ ')
+    await button('确认文字').trigger('click')
+    expect(dialog.get('[role="status"]').text()).toBe('已确认的文字')
+    expect(dialog.get('.transcript-box p').text()).toBe('小兔回家了吗？')
+    expect(dialog.text()).toContain('仅在本次弹窗内查看')
+    expect(getUserMedia).toHaveBeenCalledTimes(entry === 'denied' ? 1 : 0)
+    expect(transcribe).not.toHaveBeenCalled()
+    expect(synthesize).not.toHaveBeenCalled()
+    await dialog.get('.modal-close').trigger('click')
+    await button('输入文字').trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('')
+  })
+
   it('displays the corrected text after the parent confirms it', async () => {
     const dialog = await receiveUnconfirmedTranscript()
     const editor = dialog.get('textarea')
@@ -240,6 +265,113 @@ describe('narration lifecycle', () => {
 })
 
 describe('reader state and visual progress', () => {
+  it.each([1, 7])('finishes from page %i without an extra turn or duplicate completion', async (currentPage) => {
+    const pending = deferred()
+    const completeReading = vi.fn().mockReturnValue(pending.promise)
+    const visitedPageNumbers = currentPage === 1 ? [1] : [1, 3, 7]
+    render({ session: { ...initialSession, currentPage, visitedPageNumbers }, completeReading })
+    const finish = button(currentPage === 1 ? '结束本次阅读' : '完成')
+    await finish.trigger('click')
+    await finish.trigger('click')
+    expect(completeReading).toHaveBeenCalledTimes(1)
+    expect(wrapper.props('recordPage')).not.toHaveBeenCalled()
+    pending.resolve(true)
+    await wrapper.setProps({ session: { ...initialSession, currentPage, visitedPageNumbers, status: 'FINISHED' }, report: { status: 'READY', summary: '本次已读记录' } })
+    expect(wrapper.text()).toContain('本次已读记录')
+    expect(button('结束本次阅读')).toBeUndefined()
+  })
+
+  it('only enables forward navigation to previously visited pages after an early finish', async () => {
+    const session = { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3] }
+    render({ session })
+    await button('结束本次阅读').trigger('click')
+    await wrapper.setProps({ session: { ...session, status: 'FINISHED' } })
+    await flushPromises()
+    expect(button('下一页').element.disabled).toBe(true)
+
+    await button('上一页').trigger('click')
+    expect(showPage).toHaveBeenLastCalledWith(0)
+    expect(button('下一页').element.disabled).toBe(false)
+    await button('下一页').trigger('click')
+    expect(showPage).toHaveBeenLastCalledWith(1)
+    expect(button('下一页').element.disabled).toBe(true)
+    expect(wrapper.props('recordPage')).not.toHaveBeenCalled()
+  })
+
+  it('follows the visited branch when reviewing a finished session with buttons or gestures', async () => {
+    const session = { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3] }
+    const branchedBook = { ...book, pageCount: 4, pages: [
+      { ...book.pages[0], defaultNextPageNumber: 2 },
+      { pageNumber: 2, text: '二', defaultNextPageNumber: 3 },
+      ...book.pages.slice(1),
+    ] }
+    let onFlip
+    const widget = { on: (_, callback) => { onFlip = callback }, turnTo: vi.fn(), destroy: vi.fn() }
+    vi.stubGlobal('OpenPageFlip', { createBook: () => widget })
+    render({ book: branchedBook, session }, true)
+    await button('结束本次阅读').trigger('click')
+    await wrapper.setProps({ session: { ...session, status: 'FINISHED' } })
+    await button('上一页').trigger('click')
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 1 页')
+    expect(button('下一页').element.disabled).toBe(false)
+    await button('下一页').trigger('click')
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 3 页')
+    expect(button('下一页').element.disabled).toBe(true)
+
+    expect(widget.destroy).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.flip-page--text').map(page => page.attributes('aria-label'))).toEqual(['第 1 页文字', '第 3 页文字'])
+    expect(wrapper.find('.page-number').text()).toContain('共 4 页')
+    onFlip({ page: 0 })
+    await flushPromises()
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 1 页')
+    onFlip({ page: 2 })
+    await flushPromises()
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 3 页')
+    expect(wrapper.props('recordPage')).not.toHaveBeenCalled()
+  })
+
+  it.each([12, 13, 200])('bounds review dots while preserving all %i visits in order', (count) => {
+    const visits = Array.from({ length: count }, (_, index) => index % 2 === 0 ? 1 : 3)
+    vi.stubGlobal('OpenPageFlip', { createBook: () => ({ on: vi.fn(), turnTo: vi.fn(), destroy: vi.fn() }) })
+    render({ session: { ...initialSession, status: 'FINISHED', currentPage: visits.at(-1), visitedPageNumbers: visits } }, true)
+
+    const pages = wrapper.findAll('.flip-page--text')
+    expect(pages.map(page => page.attributes('aria-label'))).toEqual(visits.map(number => `第 ${number} 页文字`))
+    if (count === 12) {
+      expect(wrapper.findAll('.page-dots i')).toHaveLength(count * count)
+      expect(wrapper.findAll('.page-dots i.active')).toHaveLength(count)
+    } else {
+      expect(wrapper.findAll('.page-dots i')).toHaveLength(0)
+      pages.forEach((page, index) => {
+        expect(page.get('.page-number').text()).toContain(`回看 ${index + 1} / ${count}`)
+      })
+    }
+  })
+
+  it('keeps the position of each visit when an approved branch revisits a page', async () => {
+    render({ session: { ...initialSession, status: 'FINISHED', currentPage: 1, visitedPageNumbers: [1, 7, 1] } })
+    expect(button('上一页').element.disabled).toBe(false)
+    await button('上一页').trigger('click')
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 7 页')
+    await button('上一页').trigger('click')
+    expect(button('上一页').element.disabled).toBe(true)
+    await button('下一页').trigger('click')
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 7 页')
+    await button('下一页').trigger('click')
+    expect(wrapper.get('.reader-heading p').text()).toContain('第 1 页')
+    expect(button('下一页').element.disabled).toBe(true)
+    expect(wrapper.props('recordPage')).not.toHaveBeenCalled()
+  })
+
+  it('finishes while reviewing an earlier page without changing the saved progress', async () => {
+    const completeReading = vi.fn()
+    render({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3] }, completeReading })
+    await button('上一页').trigger('click')
+    await button('结束本次阅读').trigger('click')
+    expect(completeReading).toHaveBeenCalledTimes(1)
+    expect(wrapper.props('recordPage')).not.toHaveBeenCalled()
+  })
+
   it.each(['READY', 'FAILED'])('shows the pending facts and refreshes a %s report in place', async (status) => {
     const refreshReading = vi.fn()
     const completeReading = vi.fn()
@@ -276,6 +408,7 @@ describe('reader state and visual progress', () => {
     const record = vi.fn().mockReturnValue(pending.promise)
     render({ recordPage: record })
     await button('下一页').trigger('click')
+    expect(button('结束本次阅读').element.disabled).toBe(true)
     wrapper.findComponent({ name: 'FlipBook' }).vm.$emit('page-change', { storyIndex: 2 })
     expect(record).toHaveBeenCalledTimes(1)
     expect(record).toHaveBeenCalledWith(3)
@@ -295,17 +428,20 @@ describe('reader state and visual progress', () => {
     expect(wrapper.findComponent({ name: 'FlipBook' }).props('startPage')).toBe(0)
   })
 
-  it('allows read-only revisits without writes or voice calls for an old snapshot', async () => {
+  it.each(['IN_PROGRESS', 'FINISHED', 'INTERRUPTED'])('keeps the revisit hint consistent with media controls in %s sessions', async (status) => {
     const record = vi.fn()
-    render({ session: { ...initialSession, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 }, recordPage: record })
+    render({ session: { ...initialSession, status, currentPage: 3, visitedPageNumbers: [1, 3], revision: 2 }, recordPage: record })
     await button('上一页').trigger('click')
     expect(wrapper.text()).toContain('回看已读页')
+    expect(wrapper.text().includes('返回当前进度后可继续朗读与录音')).toBe(status === 'IN_PROGRESS')
     expect(button('朗读').element.disabled).toBe(true)
+    expect(button('语音识别').element.disabled).toBe(true)
     expect(record).not.toHaveBeenCalled()
     await button('下一页').trigger('click')
     expect(showPage).toHaveBeenLastCalledWith(1)
     expect(record).not.toHaveBeenCalled()
-    expect(button('朗读').element.disabled).toBe(false)
+    expect(button('朗读').element.disabled).toBe(status !== 'IN_PROGRESS')
+    expect(button('语音识别').element.disabled).toBe(status !== 'IN_PROGRESS')
   })
 
   it('marks unintegrated interactions unavailable and unknown progress as pending', () => {
@@ -313,6 +449,7 @@ describe('reader state and visual progress', () => {
     expect(button('已理解').element.disabled).toBe(true)
     expect(button('还没懂').element.disabled).toBe(true)
     expect(button('下一页').element.disabled).toBe(true)
+    expect(button('结束本次阅读').element.disabled).toBe(true)
     expect(button('朗读').element.disabled).toBe(true)
     expect(wrapper.text()).toContain('进度待确认')
     expect(button('确认并同步进度')).toBeDefined()
