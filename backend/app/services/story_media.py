@@ -311,6 +311,33 @@ def _pin_asset(store_root: Path, root: Path, raw_ref: str | None) -> dict | None
     return {"blob": blob_name, "mediaType": media_type}
 
 
+def _pin_page_asset(store_root: Path, root: Path, raw_ref: str) -> dict | None:
+    asset = _pin_asset(store_root, root, raw_ref)
+    if asset is not None:
+        asset["rawRef"] = raw_ref
+    return asset
+
+
+def freeze_approval_page_media(db: sqlite3.Connection, version: sqlite3.Row) -> str:
+    """The approval transaction publishes the page map. Files contain only immutable blobs."""
+    root, _ = ensure_media_dependencies()
+    store = _pin_store_root()
+    entries = {}
+    if version["source_session_id"] is not None:
+        source = db.execute("SELECT * FROM story_versions WHERE id = ?", (version["source_version_id"],)).fetchone()
+        frozen_pages = pin_version_media(db, source)["pages"]
+        for page, source_page in enumerate(json.loads(version["source_visited_pages_json"]), start=1):
+            entries[str(page)] = frozen_pages.get(str(source_page))
+    try:
+        for page, raw_ref in db.execute("SELECT page_no, image_ref FROM story_pages WHERE version_id = ?",
+                                        (version["id"],)):
+            if str(page) not in entries:
+                entries[str(page)] = _pin_page_asset(store, root, raw_ref)
+        return json.dumps(entries, ensure_ascii=False)
+    except OSError as exc:
+        raise MediaDependencyError("Page image storage is unavailable") from exc
+
+
 def pin_version_media(db: sqlite3.Connection, version_row: sqlite3.Row | dict, *,
                       source_type: str | None = None, pages: list[sqlite3.Row] | None = None,
                       db_path: Path | None = None, backfill: bool = False) -> dict:
@@ -327,6 +354,10 @@ def pin_version_media(db: sqlite3.Connection, version_row: sqlite3.Row | dict, *
         else:
             src_type = cur.execute("SELECT source_type FROM storybooks WHERE id = ?", (storybook_id,)).fetchone()[0]
     identity = _identity_for_row(version_row, src_type)
+    if "approved_page_media_json" in version_row.keys() and version_row["approved_page_media_json"] is not None:
+        if not backfill:
+            ensure_media_dependencies()
+        return {"identity": identity, "cover": None, "pages": json.loads(version_row["approved_page_media_json"])}
     draft = version_row["status"] in ("DRAFT", "CHECK_FAILED", "PENDING_REVIEW")
     has_seed_cover = src_type == "LIBRARY" and version_row["source_ref"] == SEED_COVER_SOURCE_REF
     try:
@@ -382,10 +413,7 @@ def pin_version_media(db: sqlite3.Connection, version_row: sqlite3.Row | dict, *
                 cover = _pin_asset(store_root, root, cover_path)
             manifest = {"identity": identity, "cover": cover, "pages": {}}
             for page in pages:
-                asset = _pin_asset(store_root, root, page["image_ref"])
-                if asset is not None:
-                    asset["rawRef"] = page["image_ref"]
-                manifest["pages"][str(page["page_no"])] = asset
+                manifest["pages"][str(page["page_no"])] = _pin_page_asset(store_root, root, page["image_ref"])
             _write_snapshot_file(meta_path, json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
             manifest = _load_version_manifest(meta_path, binding_path, identity)
             if manifest is None:
@@ -435,9 +463,12 @@ def _pinned_blob_is_readable(entry: object) -> bool:
         return True
 
 
-def ensure_opening_media(db: sqlite3.Connection, version: sqlite3.Row) -> None:
+def ensure_opening_media(db: sqlite3.Connection, version: sqlite3.Row, *, page_no: int = 1) -> None:
     manifest = pin_version_media(db, version)
-    for entry in (manifest["cover"], manifest["pages"].get("1")):
+    entries = [manifest["cover"], manifest["pages"].get("1")]
+    if page_no != 1:
+        entries.append(manifest["pages"].get(str(page_no)))
+    for entry in entries:
         if entry is not None and not _pinned_blob_is_readable(entry):
             raise MediaDependencyError("Pinned opening image is unavailable")
 

@@ -14,6 +14,7 @@ import {
   updateReadingMode,
 } from '../api/reading'
 import { previewBooks, mapApiBook } from '../data/preview'
+import { countReadPages } from '../data/readingProgress'
 
 const CHILD_SESSION_KEY = 'zhiya.childHandoffSessionId'
 const PENDING_SESSION_DELETES = 'zhiya.pendingSessionDeletes'
@@ -1089,7 +1090,7 @@ async function completeReading() {
     session.status = 'FINISHED'
     state.currentReport = {
       status: 'READY',
-      summary: `本次共读浏览了 ${session.visitedPageNumbers.length} 页，可在家长陪伴下继续交流故事内容。`,
+      summary: `本次共读浏览了 ${countReadPages(session)} 页，可在家长陪伴下继续交流故事内容。`,
       activities: [],
     }
     setToast('本次预览阅读已完成')
@@ -1179,7 +1180,7 @@ const totals = computed(() => {
   return {
     sessions: state.sessions.filter((session) => ['IN_PROGRESS', 'FINISHED'].includes(session.status)).length,
     read: new Set(visited.map((session) => session.storyVersionId)).size,
-    pages: visited.reduce((sum, session) => sum + session.visitedPageNumbers.length, 0),
+    pages: visited.reduce((sum, session) => sum + countReadPages(session), 0),
   }
 })
 

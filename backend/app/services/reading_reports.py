@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from app.core.config import database_path
 from app.db.connection import connect, database_ready
+from app.db.continuation_migration import migrate_continuations
 
 logger = logging.getLogger("zhiya.reports")
 MAX_SUMMARY_CHARS = 500
@@ -35,6 +36,10 @@ SUMMARY_PROMPT = (
 )
 _recovery_lock = threading.Lock()
 _recovered_paths: set[Path] = set()
+
+
+def session_read_pages(session) -> list[int]:
+    return [page for page in json.loads(session["visited_pages_json"]) if page >= session["start_page_number"]]
 
 
 def fact_summary(visited_pages: list[int]) -> str:
@@ -141,6 +146,7 @@ def ensure_startup_recovered() -> bool:
             return False
         try:
             with closing(connect(timeout=0.3)) as db, db:
+                migrate_continuations(db)
                 db.execute("BEGIN IMMEDIATE")
                 db.execute(
                     """UPDATE reading_reports SET status = 'FAILED', activities_json = '[]', updated_at = ?
@@ -161,7 +167,7 @@ def recover_pending_reports() -> bool:
 
 def unsettled_sessions(db, guardian_id: int, grant_id: int | None, now: int):
     """Only inspect sessions in the authenticated family or the narrower child grant."""
-    sql = """SELECT s.id, s.status, s.version_id, s.visited_pages_json, g.expires_at,
+    sql = """SELECT s.id, s.status, s.version_id, s.visited_pages_json, s.start_page_number, g.expires_at,
                     v.status AS version_status
              FROM child_profiles p
              JOIN reading_sessions s ON s.profile_id = p.id
@@ -196,7 +202,7 @@ def settle_grant_sessions(db, guardian_id: int, grant_id: int | None, now: int):
                WHERE id = ?""",
             (row["expires_at"], sid),
         )
-        visited = json.loads(row["visited_pages_json"])
+        visited = session_read_pages(row)
         facts = fact_summary(visited)
         inserted = db.execute(
             """INSERT OR IGNORE INTO reading_reports (session_id, status, summary, activities_json, updated_at)

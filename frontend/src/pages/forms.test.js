@@ -100,11 +100,15 @@ describe('forms wait for completion', () => {
       section: 'growth',
       auth: { nickname: '家长', authenticated: true },
       books: [{ storyVersionId: 88, title: '测试绘本' }],
-      sessions: [{ readingSessionId: 7, storyVersionId: 88, visitedPageNumbers: [1], status: 'FINISHED', revision: 2 }],
+      sessions: [{
+        readingSessionId: 7, storyVersionId: 88, visitedPageNumbers: [1, 2, 3],
+        startPageNumber: 3, carriedPrefixPageCount: 2, status: 'FINISHED', revision: 2,
+      }],
       totals: { read: 1, pages: 1, sessions: 1 },
       saveProfileAction: vi.fn(),
       deleteSessionAction: remove,
     })
+    expect(wrapper.get('.recent-item').text()).toContain('浏览 1 页')
     await wrapper.findAll('button').find((button) => button.text() === '删除记录').trigger('click')
     await wrapper.findAll('button').find((button) => button.text().includes('确认删除')).trigger('click')
     expect(remove).toHaveBeenCalledWith(7)

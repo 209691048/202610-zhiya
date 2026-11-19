@@ -1246,7 +1246,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "默认返回有权访问的当前PUBLISHED/APPROVED_PRIVATE版本。scope=mine仅限已认证家长，另包含本人已审核私有RETIRED历史版本；各项以storyVersionId区分，遵守common.versionAccess，不返回WITHDRAWN内容。",
+      "constraints": "默认返回有权访问的当前PUBLISHED/APPROVED_PRIVATE版本。scope=mine仅限已认证家长，另包含本人已审核私有RETIRED历史版本；各项以storyVersionId区分，遵守common.versionAccess，不返回WITHDRAWN内容。仅家长的续写版本对象包含sourceStoryVersionId和continuation。",
       "interfaceId": "API-008",
       "uniqueKey": "GET /api/v1/storybooks",
       "additionalExamples": [
@@ -1328,7 +1328,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "儿童不接收未审核草稿或管理字段。正文和媒体均遵守common.versionAccess；本人已审核私有RETIRED版本可从历史入口复读，LIBRARY退休版本仅限既有有效会话；WITHDRAWN立即拒绝。",
+      "constraints": "仅家长的续写版本对象包含sourceStoryVersionId和continuation。儿童只接收已授权的阅读内容。正文和媒体均遵守common.versionAccess；本人已审核私有RETIRED版本可从历史入口复读，LIBRARY退休版本仅限既有有效会话；WITHDRAWN立即拒绝。",
       "interfaceId": "API-009",
       "uniqueKey": "GET /api/v1/story-versions/{version_id}"
     },
@@ -1389,7 +1389,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "普通创建仅PARENT_CHILD/CREATED；storyVersionId固定到按common.versionAccess可新建会话的版本。本人已审核私有RETIRED版本可复读；LIBRARY退休版本和任何WITHDRAWN版本均禁止新建。儿童模式在STARTED前由mode-settings原子签发授权及绑定。有限续写按flows.continuationSwitch原子切换，属于本期FR-17 P1，验收TC-FR17-04/05；普通主链无需续写即可完成，范围及审批状态见common.deliveryScope。",
+      "constraints": "普通创建须省略sourceReadingSessionId、expectedRevision和clientRequestId，初始为PARENT_CHILD/CREATED。切换须同时提供这三个非空字段，缺项或显式null返回422 VALIDATION_ERROR。storyVersionId固定到按common.versionAccess可新建会话的版本。本人已审核私有RETIRED版本可复读；LIBRARY退休版本和任何WITHDRAWN版本均禁止新建。儿童模式在STARTED前由mode-settings原子签发授权及绑定。有限续写按flows.continuationSwitch原子切换，属于本期FR-17 P1，验收TC-FR17-04/05；普通主链无需续写即可完成，范围及审批状态见common.deliveryScope。",
       "interfaceId": "API-011",
       "uniqueKey": "POST /api/v1/reading-sessions",
       "additionalExamples": [
@@ -2148,7 +2148,7 @@
         "requestId": "req-demo"
       },
       "errors": "见 common.errors；只应用与本端点有关的错误类别",
-      "constraints": "再次核验所有检查和版本；不以客户端布尔值代替后端安全检查；成功后私有可读，不能自动公开。 续写草稿的continuation随页面、全部分支和插画一起审核冻结；批准不结束源会话，也不自动创建新会话。新版生效与旧当前版本转RETIRED在同一事务完成；保留旧版审核人和审核时间，本人已审核私有旧版仍按common.versionAccess复读；不得将WITHDRAWN恢复为可读。",
+      "constraints": "再次核验所有检查和版本；不以客户端布尔值代替后端安全检查；成功后私有可读，不能自动公开。 续写源路径每一步须为源版本的默认后继或已审核分支。快照修订号超前或路径与该修订号的实际进度不符时返回422 VALIDATION_ERROR。源会话已推进时依据阅读事件核验旧路径，合法旧快照仍可批准并从头阅读。续写草稿的continuation随页面、全部分支和插画一起审核冻结；批准不结束源会话，也不自动创建新会话。新版生效与旧当前版本转RETIRED在同一事务完成；保留旧版审核人和审核时间，本人已审核私有旧版仍按common.versionAccess复读；不得将WITHDRAWN恢复为可读。",
       "interfaceId": "API-026",
       "uniqueKey": "POST /api/v1/story-versions/{version_id}/approvals",
       "additionalExamples": [
@@ -2510,9 +2510,10 @@
     "continuationSwitch": [
       "本期FR-17 P1验收流程，覆盖TC-FR17-04/05；范围及审批状态见common.deliveryScope。",
       "API-025固定源会话revision=12及路径[1,2]，生成版本302和继续点3",
-      "API-026批准version=2，源会话仍IN_PROGRESS/revision=12",
+      "API-026核对同一绘本、继承页正文与冻结配图，批准version=2，源会话仍IN_PROGRESS/revision=12",
       "API-011提交sourceReadingSessionId和switch-001，在同一事务关闭旧会话并启动会话402第3页",
-      "源快照过期409且旧会话不变；数据库提交失败503且全部回滚；提交后丢响应以同键重放既有会话402，不创建第二个后继"
+      "新请求遇到过期源快照返回409 CONTINUATION_STALE，源会话已切换返回409 CONTINUATION_ALREADY_SWITCHED。提交失败503并回滚，丢响应时按原键重放既有会话402",
+      "后继的完整路径用于导航，小结与成长页数从startPageNumber起计算。删除源记录后保留startPageNumber和carriedPrefixPageCount。删除源快照时关联的DRAFT、PENDING_REVIEW续写转为CHECK_FAILED，后续审批返回409 SESSION_CONFLICT。已批准版本保留冻结配图"
     ]
   },
   "version": "v0.4",

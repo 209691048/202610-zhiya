@@ -1,4 +1,4 @@
-"""Guardian reading sessions: normal creation and recovery (no continuation switching)."""
+"""Guardian and child reading sessions, events, branches, completions, and continuation switching."""
 
 import json
 import hashlib
@@ -27,6 +27,7 @@ from app.services.reading_reports import (
     fact_summary,
     generate_report,
     report_object,
+    session_read_pages,
 )
 from app.services.story_media import MediaDependencyError, ensure_opening_media
 
@@ -41,6 +42,18 @@ class SessionCreate(BaseModel):
     childProfileId: int = Field(ge=1, le=MAX_ID, strict=True)
     storyVersionId: int = Field(ge=1, le=MAX_ID, strict=True)
     mode: Literal["PARENT_CHILD"]
+    sourceReadingSessionId: int | None = Field(default=None, ge=1, le=MAX_ID, strict=True)
+    expectedRevision: int | None = Field(default=None, ge=0, le=MAX_ID, strict=True)
+    clientRequestId: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_continuation_fields(self):
+        switch_fields = {"sourceReadingSessionId", "expectedRevision", "clientRequestId"}
+        if self.model_fields_set & switch_fields and (
+            self.sourceReadingSessionId is None or self.expectedRevision is None or self.clientRequestId is None
+        ):
+            raise ValueError("续写切换须同时提供 sourceReadingSessionId、expectedRevision 和 clientRequestId")
+        return self
 
 
 class Completion(BaseModel):
@@ -129,12 +142,19 @@ def child_answer_options(db: sqlite3.Connection, session: sqlite3.Row) -> list[s
 
 def session_object(row):
     expiry = row["grant_expires_at"]
-    return {
+    data = {
         "readingSessionId": row["id"], "storyVersionId": row["version_id"],
         "currentPage": row["current_page_no"], "visitedPageNumbers": json.loads(row["visited_pages_json"]),
         "mode": row["mode"], "status": row["status"], "revision": row["revision"],
         "expiresAt": iso_utc(expiry) if expiry is not None else None,
     }
+    source_session_id = row["source_reading_session_id"]
+    if source_session_id is not None:
+        data["sourceReadingSessionId"] = source_session_id
+    if source_session_id is not None or row["carried_prefix_page_count"] > 0:
+        data["startPageNumber"] = row["start_page_number"]
+        data["carriedPrefixPageCount"] = row["carried_prefix_page_count"]
+    return data
 
 
 # Retired versions remain readable for existing sessions (history, reports and replay),
@@ -146,6 +166,108 @@ SESSION_ACCESS = """(v.status = 'PUBLISHED' OR
          OR b.source_type = 'LIBRARY')))"""
 
 
+def _switch_continuation_session(db, request: Request, owner: int, payload: SessionCreate):
+    digest = request_digest("/api/v1/reading-sessions", payload.model_dump())
+    profile = db.execute("SELECT 1 FROM child_profiles WHERE id = ? AND guardian_id = ?",
+                         (payload.childProfileId, owner)).fetchone()
+    if not profile:
+        return error(request, 404, "RESOURCE_NOT_FOUND", "档案不可用")
+    target = db.execute(
+        """SELECT v.*, b.source_type AS storybook_source_type FROM story_versions v
+           JOIN storybooks b ON b.id = v.storybook_id
+           WHERE v.id = ? AND b.owner_guardian_id = ? AND b.source_type = 'ORIGINAL'""",
+        (payload.storyVersionId, owner),
+    ).fetchone()
+    if not target or target["status"] == "WITHDRAWN":
+        return error(request, 404, "RESOURCE_NOT_FOUND", "绘本版本不可用")
+    src = db.execute(
+        """SELECT s.*, v.status AS src_version_status, v.storybook_id AS source_book FROM reading_sessions s
+           JOIN child_profiles p ON p.id = s.profile_id
+           JOIN story_versions v ON v.id = s.version_id
+           WHERE s.id = ? AND p.guardian_id = ?""",
+        (payload.sourceReadingSessionId, owner),
+    ).fetchone()
+    if not src or src["src_version_status"] == "WITHDRAWN":
+        return error(request, 404, "RESOURCE_NOT_FOUND", "源阅读会话不可用")
+    replay = replay_execution(db, request, "SESSION_CREATE", owner, payload.clientRequestId, digest,
+                              source_session_id=src["id"])
+    if replay is not None:
+        return replay
+
+    def reject_switch(code, message):
+        return fail_execution(db, request, owner, "SESSION_CREATE", owner, None, payload.clientRequestId,
+                              digest, 409, code, message, source_session_id=src["id"])
+
+    if target["source_session_id"] != src["id"] or target["storybook_id"] != src["source_book"]:
+        return reject_switch("SESSION_CONFLICT", "目标版本与源会话或绘本不匹配")
+    if src["profile_id"] != payload.childProfileId or src["mode"] != "PARENT_CHILD":
+        return reject_switch("SESSION_CONFLICT", "仅支持同一儿童档案的亲子会话续写切换")
+    already_switched = db.execute(
+        "SELECT 1 FROM reading_sessions WHERE source_reading_session_id = ?", (src["id"],)
+    ).fetchone()
+    if already_switched or src["end_reason"] == "CONTINUED":
+        return reject_switch("CONTINUATION_ALREADY_SWITCHED", "该阅读已切换，请查看续写阅读记录")
+    if target["status"] != "APPROVED_PRIVATE":
+        return reject_switch("SESSION_CONFLICT", "目标续写版本未批准")
+    if (src["status"] != "IN_PROGRESS"
+            or src["revision"] != payload.expectedRevision
+            or src["version_id"] != target["source_version_id"]
+            or src["revision"] != target["source_revision"]
+            or src["current_page_no"] != target["source_page_no"]
+            or json.loads(src["visited_pages_json"]) != json.loads(target["source_visited_pages_json"])):
+        return reject_switch("CONTINUATION_STALE", "源阅读进度已变化，请从当前进度重新生成续写")
+    resume_page = target["resume_page_no"]
+    prefix = json.loads(target["source_visited_pages_json"])
+    if (resume_page != len(prefix) + 1
+            or not db.execute("SELECT 1 FROM story_pages WHERE version_id = ? AND page_no = ?",
+                              (payload.storyVersionId, resume_page)).fetchone()):
+        return reject_switch("SESSION_CONFLICT", "续写继续页不可用")
+
+    # Snapshot and verify opening media (including the continuation resume page) before closing the source session.
+    ensure_opening_media(db, target, page_no=resume_page)
+
+    now = int(time.time() * 1000)
+    closed = db.execute(
+        """UPDATE reading_sessions SET status = 'FINISHED', end_reason = 'CONTINUED',
+           ended_at = ?, revision = revision + 1
+           WHERE id = ? AND status = 'IN_PROGRESS' AND revision = ?""",
+        (now, src["id"], src["revision"]),
+    )
+    if closed.rowcount != 1:
+        return reject_switch("CONTINUATION_STALE", "源阅读进度已变化，请从当前进度重新生成续写")
+    db.execute(
+        """INSERT OR IGNORE INTO reading_reports (session_id, status, summary, activities_json, updated_at)
+           VALUES (?, 'READY', ?, '[]', ?)""",
+        (src["id"], fact_summary(session_read_pages(src)), now),
+    )
+    # Carried prefix pages are renumbered 1..k in the continuation version, resuming at k+1.
+    new_visited = [*range(1, len(prefix) + 1), resume_page]
+    cursor = db.execute(
+        """INSERT INTO reading_sessions
+           (profile_id, version_id, current_page_no, mode, status, revision, visited_pages_json,
+            source_reading_session_id, start_page_number, carried_prefix_page_count, created_at, started_at)
+           VALUES (?, ?, ?, 'PARENT_CHILD', 'IN_PROGRESS', 1, ?, ?, ?, ?, ?, ?)""",
+        (payload.childProfileId, payload.storyVersionId, resume_page, json.dumps(new_visited),
+         src["id"], resume_page, len(prefix), now, now),
+    )
+    new_session_id = cursor.lastrowid
+    new_row = db.execute(
+        "SELECT *, NULL AS grant_expires_at FROM reading_sessions WHERE id = ?", (new_session_id,)
+    ).fetchone()
+    response = {"data": session_object(new_row), "requestId": request.state.request_id}
+    db.execute(
+        """INSERT INTO interaction_events
+           (session_id, version_id, request_key, request_digest, response_json, page_no, event_type,
+            result_status, revision_after, created_at)
+           VALUES (?, ?, NULL, ?, ?, ?, 'STARTED', 'SUCCESS', 1, ?)""",
+        (new_session_id, payload.storyVersionId, digest,
+         json.dumps(response, ensure_ascii=False), resume_page, now),
+    )
+    record_execution(db, owner, "SESSION_CREATE", owner, None, payload.clientRequestId,
+                     digest, now, 201, response, source_session_id=src["id"])
+    return JSONResponse(status_code=201, content=response)
+
+
 @router.post("", status_code=201)
 def create_session(payload: SessionCreate, request: Request):
     try:
@@ -153,6 +275,8 @@ def create_session(payload: SessionCreate, request: Request):
             if failure:
                 return failure
             owner = principal.guardian_id
+            if payload.sourceReadingSessionId is not None:
+                return _switch_continuation_session(db, request, owner, payload)
             profile = db.execute("SELECT 1 FROM child_profiles WHERE id = ? AND guardian_id = ?",
                                  (payload.childProfileId, owner)).fetchone()
             version = db.execute(
@@ -421,29 +545,32 @@ def owned_session(db, session_id: int, principal: Principal):
     ).fetchone()
 
 
-def replay_session_event(db, request: Request, session_id: int, client_event_id: str, digest: str,
-                         principal: Principal | None = None, *, page_version_id: int | None = None):
-    """Shared SESSION_EVENT lookup for events/completions (and later questions/guidance/branches).
-
-    Returns a response when the key was already used, otherwise None.
-    """
-    previous = db.execute("""SELECT request_digest, status, response_status, response_body, deadline_at
-                          FROM request_executions WHERE scope_type = 'SESSION_EVENT'
+def replay_execution(db, request: Request, scope_type: str, scope_id: int, client_request_id: str,
+                     digest: str, principal: Principal | None = None, *, page_version_id: int | None = None,
+                     source_session_id: int | None = None):
+    """Shared request_executions lookup for SESSION_EVENT and SESSION_CREATE scopes."""
+    previous = db.execute("""SELECT id, request_digest, status, response_status, response_body, deadline_at,
+                                 source_reading_session_id
+                          FROM request_executions WHERE scope_type = ?
                           AND scope_id = ? AND client_request_id = ?""",
-                          (session_id, client_event_id)).fetchone()
+                          (scope_type, scope_id, client_request_id)).fetchone()
     if not previous:
         return None
     if previous["request_digest"] != digest:
         return error(request, 409, "IDEMPOTENCY_CONFLICT", "请求标识已用于其他操作")
+    if source_session_id is not None and previous["source_reading_session_id"] is None:
+        # An older failed response has no source ID. A matching replay supplies its verified association.
+        db.execute("UPDATE request_executions SET source_reading_session_id = ? WHERE id = ?",
+                   (source_session_id, previous["id"]))
     if previous["status"] == "RUNNING":
         now = int(time.time() * 1000)
         if previous["deadline_at"] <= now:
             failure = error(request, 504, "REQUEST_OUTCOME_UNKNOWN", "请求结果未知，请先查询会话")
             db.execute("""UPDATE request_executions SET status = 'UNKNOWN', completed_at = ?,
-                          response_status = 504, response_body = ? WHERE scope_type = 'SESSION_EVENT'
+                          response_status = 504, response_body = ? WHERE scope_type = ?
                           AND scope_id = ? AND client_request_id = ? AND status = 'RUNNING'
                           AND deadline_at <= ?""",
-                       (now, failure.body.decode('utf-8'), session_id, client_event_id, now))
+                       (now, failure.body.decode('utf-8'), scope_type, scope_id, client_request_id, now))
             return failure
         return error(request, 409, "REQUEST_IN_PROGRESS", "请求正在处理", retryable=True, headers={"Retry-After": "1"})
     if previous["status"] == "UNKNOWN":
@@ -459,25 +586,48 @@ def replay_session_event(db, request: Request, session_id: int, client_event_id:
                         content=body)
 
 
-def record_session_event(db, owner: int, session_id: int, client_event_id: str, digest: str,
-                         now: int, status_code: int, response: dict, *,
-                         status: str = "SUCCEEDED", execution_token: str | None = None) -> str:
+def record_execution(db, owner: int, scope_type: str, scope_id: int, session_id: int | None,
+                     client_request_id: str, digest: str, now: int, status_code: int, response: dict, *,
+                     status: str = "SUCCEEDED", execution_token: str | None = None,
+                     source_session_id: int | None = None) -> str:
     token = execution_token or str(uuid4())
     db.execute("""INSERT INTO request_executions
         (owner_account_id, session_id, scope_type, scope_id, client_request_id, request_digest,
-         status, execution_token, started_at, deadline_at, completed_at, response_status, response_body)
-        VALUES (?, ?, 'SESSION_EVENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (owner, session_id, session_id, client_event_id, digest, status, token, now, now + 25000,
-         now, status_code, json.dumps(response, ensure_ascii=False)))
+         status, execution_token, started_at, deadline_at, completed_at, response_status, response_body,
+         source_reading_session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (owner, session_id, scope_type, scope_id, client_request_id, digest, status, token, now, now + 25000,
+         now, status_code, json.dumps(response, ensure_ascii=False), source_session_id))
     return token
+
+
+def fail_execution(db, request: Request, owner: int, scope_type: str, scope_id: int, session_id: int | None,
+                   client_request_id: str, digest: str, status_code: int, code: str, message: str, *,
+                   source_session_id: int | None = None):
+    failure = error(request, status_code, code, message)
+    record_execution(db, owner, scope_type, scope_id, session_id, client_request_id, digest,
+                     int(time.time() * 1000), status_code, json.loads(failure.body), status="FAILED",
+                     source_session_id=source_session_id)
+    return failure
+
+
+def replay_session_event(db, request: Request, session_id: int, client_event_id: str, digest: str,
+                         principal: Principal | None = None, *, page_version_id: int | None = None):
+    return replay_execution(db, request, "SESSION_EVENT", session_id, client_event_id, digest, principal,
+                            page_version_id=page_version_id)
+
+
+def record_session_event(db, owner: int, session_id: int, client_event_id: str, digest: str,
+                         now: int, status_code: int, response: dict, *,
+                         status: str = "SUCCEEDED", execution_token: str | None = None) -> str:
+    return record_execution(db, owner, "SESSION_EVENT", session_id, session_id, client_event_id, digest,
+                            now, status_code, response, status=status, execution_token=execution_token)
 
 
 def fail_session_event(db, request: Request, owner: int, session_id: int, client_event_id: str,
                        digest: str, status_code: int, code: str, message: str):
-    failure = error(request, status_code, code, message)
-    record_session_event(db, owner, session_id, client_event_id, digest,
-                         int(time.time() * 1000), status_code, json.loads(failure.body), status="FAILED")
-    return failure
+    return fail_execution(db, request, owner, "SESSION_EVENT", session_id, session_id, client_event_id,
+                          digest, status_code, code, message)
 
 
 @router.post("/{session_id}/events", status_code=201)
@@ -641,7 +791,7 @@ def finish_session(payload: Completion, request: Request, background: Background
                 # New key after finish: existing terminal state and current report, no model call.
                 report = db.execute("SELECT * FROM reading_reports WHERE session_id = ?", (session_id,)).fetchone()
             elif row["status"] == "IN_PROGRESS" and row["revision"] == payload.expectedRevision:
-                visited = json.loads(row["visited_pages_json"])
+                visited = session_read_pages(row)
                 facts = fact_summary(visited)
                 generation_token = str(uuid4())
                 db.execute("""UPDATE reading_sessions SET status = 'FINISHED', end_reason = 'USER_FINISH',

@@ -524,6 +524,28 @@ describe('child-mode handoff', () => {
 })
 
 describe('growth statistics', () => {
+  it.each([
+    { path: [1, 2, 3, 4], count: 2 },
+    { path: [1], count: 0 },
+    { path: [1, 4], count: 1 },
+  ])('counts $count visits outside the carried prefix in path $path', async ({ path, count }) => {
+    await actions.signIn('parent-a', 'password123')
+    const { totals } = await import('./useZhiya')
+    const continued = session({
+      readingSessionId: 56, startPageNumber: 3, carriedPrefixPageCount: 2, visitedPageNumbers: path,
+    })
+    reading.listReadingSessions.mockResolvedValueOnce([
+      session({ readingSessionId: 55, visitedPageNumbers: [1, 2] }),
+      { ...continued, sourceReadingSessionId: 55 },
+    ]).mockResolvedValueOnce([continued])
+
+    await actions.loadSessions()
+    expect(totals.value.pages).toBe(2 + count)
+    await actions.loadSessions()
+    expect(totals.value.pages).toBe(count)
+    expect(state.sessions[0].visitedPageNumbers).toEqual(path)
+  })
+
   it('counts actual visits and only in-progress or finished sessions', async () => {
     await actions.signIn('parent-a', 'password123')
     const { totals } = await import('./useZhiya')

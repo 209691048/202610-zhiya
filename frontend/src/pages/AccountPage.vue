@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { describeApiError } from '../api/client'
 import { ageLabels } from '../data/preview'
+import { countReadPages } from '../data/readingProgress'
 
 const props = defineProps({
   section: { type: String, default: 'overview' },
@@ -268,7 +269,7 @@ async function confirmDelete() {
           <div v-if="loading" class="reader-loading"><div class="spinner" /></div>
           <div v-else-if="sessions.length" class="recent-list">
             <article v-for="session in sessions" :key="session.readingSessionId" class="recent-item">
-              <div><strong>{{ sessionTitle(session) }}</strong><p>{{ sessionRecordLabel(session) }} · 浏览 {{ session.visitedPageNumbers.length }} 页 · {{ sessionStatusLabels[session.status] || '状态待确认' }}</p></div>
+              <div><strong>{{ sessionTitle(session) }}</strong><p>{{ sessionRecordLabel(session) }} · 浏览 {{ countReadPages(session) }} 页 · {{ sessionStatusLabels[session.status] || '状态待确认' }}</p></div>
               <div class="recent-item-actions">
                 <span class="pill">修订 {{ session.revision }}</span>
                 <button class="danger" type="button" :disabled="deleteBusy" @click="askDeleteSession(session)">删除记录</button>

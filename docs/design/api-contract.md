@@ -61,7 +61,7 @@
 | API-007 删除档案 | 路径 `profile_id`，无请求体 | 204，删除范围按现行数据清理策略 |
 | API-008 绘本列表 | 可选查询 `ageBand`、`topic`、`scope=mine`、`page`、`pageSize`。页码默认 1，每页默认 20、最多 50 | 200，`items` 为绘本版本对象数组，附 `page`、`pageSize` |
 | API-009 绘本详情 | 路径 `version_id`，无请求体 | 200，绘本版本对象 |
-| API-011 创建共读会话 | `childProfileId`、`storyVersionId`、`mode=PARENT_CHILD` 必填 | 201，会话对象，`status=CREATED`、`revision=0` |
+| API-011 创建共读会话 | `childProfileId`、`storyVersionId`、`mode=PARENT_CHILD` 必填。续写切换参数见下文 | 201，普通会话为 `CREATED`、`revision=0`，切换后的会话为 `IN_PROGRESS`、`revision=1` |
 | API-012 会话列表 | 可选 `page`、`pageSize`，规则同 API-008 | 200，`items` 为会话对象数组，附 `page`、`pageSize` |
 | API-013 读取或恢复会话 | 路径 `session_id`。可选查询 `view` 默认为 `reading`。家长可选 `deletion-status` 核对删除结果 | 默认返回 200 及 `session`、`events`、`report`，未生成小结时 `report=null`。删除核对返回 200 及布尔值 `data.exists`，响应带 `Cache-Control: no-store` |
 | API-015 开始与翻页 | 路径 `session_id`。必填 `eventType=STARTED/PAGE_CHANGED`、`pageNumber`、`expectedRevision`、`clientEventId`（1～64 字符） | 首次 201，`interactionEventId`、更新后的 `revision`。同键成功重放 200 |
@@ -133,6 +133,14 @@ API-015 在同一写事务内重新计算允许的选项。儿童的 `ANSWER.inp
 验收用例：TC-FR17-04 续写原子切换、TC-FR17-05 切换失败恢复；接口链 API-025 → API-026 → API-011。
 普通主链路无需触发续写即可完成档案、选书、阅读、互动和结束记录；续写为本期有明确边界的P1流程。
 用户范围确认已记录；组长确认及设计PR审核、合并仍待实际完成，不以本文代替正式审批。
+
+API-008/009 返回已授权的续写版本时，儿童可以读取页面和已审核分支。只有家长的版本对象包含 `sourceStoryVersionId` 和 `continuation` 源进度快照。
+
+API-026 只批准同一绘本的续写。源快照中相邻的两页必须由源版本的默认后继或已审核分支连接。快照修订号不得超前，与源会话修订号相同时，当前页和已读路径也须一致。源会话已推进时，按该修订号之前及当次的阅读事件还原路径。与当时实际进度一致的旧快照仍可批准并从头阅读。按源路径逐页继承正文与已冻结的配图，每个决策节点至少有两个不同的目标页。配图对应的内容摘要随版本审批提交。
+
+API-011 普通创建须省略 `sourceReadingSessionId`、`expectedRevision` 和 `clientRequestId`。切换须同时提交这三个非空字段，缺项或显式传 `null` 返回 422 `VALIDATION_ERROR`。遇到已过期的源进度返回 409 `CONTINUATION_STALE`，源会话已经切换则返回 409 `CONTINUATION_ALREADY_SWITCHED`。同键同请求仍重放原结果。切换自动写入的 STARTED 事件不占用客户端的会话事件键。
+
+后继会话保留完整导航路径。阅读小结和成长统计只计入有效路径中从 `startPageNumber` 起的页面。删除源会话后，后继仍返回起读页和继承页数，同时清理与源关联的创建执行记录。删除源快照时，仍依赖它的 `DRAFT` 和 `PENDING_REVIEW` 续写在同一事务内转为 `CHECK_FAILED`。后续审批返回 409 `SESSION_CONFLICT`。此前已批准的版本仍按冻结配图独立阅读。
 
 ## 小结、历史版本与知识修订
 
