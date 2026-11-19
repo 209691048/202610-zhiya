@@ -13,7 +13,7 @@ BACKEND_ROOT = ROOT.parent / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.story_media import pin_database_versions  # noqa: E402
+from app.services.story_media import SEED_COVER_SOURCE_REF, pin_database_versions  # noqa: E402
 
 SEED_DIR = ROOT.parent / "data" / "seed"
 IDENTITIES = {
@@ -81,6 +81,19 @@ def import_seed(path: Path, seed_dir: Path = SEED_DIR) -> bool:
                         raise sqlite3.IntegrityError(
                             f"{table}: database is populated but some seed identities are missing"
                         )
+            db.executemany(
+                """UPDATE story_pages SET image_ref = :image_ref
+                   WHERE version_id = :version_id AND page_no = :page_no
+                     AND image_ref = '/assets/placeholder.png'
+                     AND body_text = :body_text AND image_license_note IS :image_license_note
+                     AND EXISTS (
+                         SELECT 1 FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id
+                         WHERE v.id = :version_id AND v.status = 'DRAFT'
+                           AND b.source_type = 'LIBRARY' AND v.source_ref = :seed_source
+                     )""",
+                (dict(page, seed_source=SEED_COVER_SOURCE_REF) for page in data["story_pages"]
+                 if page["image_ref"].startswith("knowledge-base_v2.5/图片/内页/")),
+            )
             check_foreign_keys(db)
             pin_database_versions(db, db_path=path)
             return False
