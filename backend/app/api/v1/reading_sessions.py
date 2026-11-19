@@ -28,6 +28,7 @@ from app.services.reading_reports import (
     generate_report,
     report_object,
 )
+from app.services.story_media import MediaDependencyError, ensure_opening_media
 
 router = APIRouter(prefix="/api/v1/reading-sessions")
 MAX_ID = 9007199254740991
@@ -155,13 +156,15 @@ def create_session(payload: SessionCreate, request: Request):
             profile = db.execute("SELECT 1 FROM child_profiles WHERE id = ? AND guardian_id = ?",
                                  (payload.childProfileId, owner)).fetchone()
             version = db.execute(
-                "SELECT v.id FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id "
+                "SELECT v.*, b.source_type AS storybook_source_type FROM story_versions v "
+                "JOIN storybooks b ON b.id = v.storybook_id "
                 "WHERE v.id = ? AND " + VISIBLE +
                 " AND EXISTS (SELECT 1 FROM story_pages p WHERE p.version_id = v.id AND p.page_no = 1)",
                 (payload.storyVersionId, owner, True, owner),
             ).fetchone()
             if not profile or not version:
                 return error(request, 404, "RESOURCE_NOT_FOUND", "档案或绘本不可用")
+            ensure_opening_media(db, version)
             cursor = db.execute(
                 """INSERT INTO reading_sessions
                 (profile_id, version_id, current_page_no, mode, status, created_at)
@@ -171,6 +174,8 @@ def create_session(payload: SessionCreate, request: Request):
             row = db.execute("SELECT *, NULL AS grant_expires_at FROM reading_sessions WHERE id = ?",
                              (cursor.lastrowid,)).fetchone()
             return {"data": session_object(row), "requestId": request.state.request_id}
+    except MediaDependencyError:
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
     except sqlite3.Error:
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
 
@@ -575,6 +580,7 @@ def choose_branch(payload: BranchChoice, request: Request, session_id: int = Pat
             if not next_page:
                 return fail_session_event(db, request, principal.guardian_id, session_id, payload.clientEventId,
                                           digest, 404, "RESOURCE_NOT_FOUND", "目标页面不可用")
+            next_page_data = page_object(db, next_page)
             now = int(time.time() * 1000)
             revision = row["revision"] + 1
             visited = json.loads(row["visited_pages_json"])
@@ -598,7 +604,7 @@ def choose_branch(payload: BranchChoice, request: Request, session_id: int = Pat
                     "currentPage": next_page["page_no"],
                     "revision": revision,
                     "interactionEventId": cursor.lastrowid,
-                    "nextPage": page_object(next_page),
+                    "nextPage": next_page_data,
                     "visitedPageNumbers": visited,
                 },
                 "requestId": request.state.request_id,
@@ -607,6 +613,8 @@ def choose_branch(payload: BranchChoice, request: Request, session_id: int = Pat
                        (json.dumps(response, ensure_ascii=False), cursor.lastrowid))
             record_session_event(db, principal.guardian_id, session_id, payload.clientEventId, digest, now, 201, response)
             return JSONResponse(status_code=201, content=response)
+    except MediaDependencyError:
+        return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
     except sqlite3.Error:
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用")
 

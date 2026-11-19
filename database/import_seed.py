@@ -1,11 +1,19 @@
-"""Import the repository's draft seed data in a single transaction."""
+"""Import draft seeds or backfill media snapshots for existing versions."""
+import argparse
 import json
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 from time import time_ns
 
-from init_db import ROOT, SEED_TABLES, check_foreign_keys, connect, database_path
+from init_db import ROOT, SEED_TABLES, check_foreign_keys, clear_pin_store, connect, database_path
+
+BACKEND_ROOT = ROOT.parent / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.services.story_media import pin_database_versions  # noqa: E402
 
 SEED_DIR = ROOT.parent / "data" / "seed"
 IDENTITIES = {
@@ -74,6 +82,7 @@ def import_seed(path: Path, seed_dir: Path = SEED_DIR) -> bool:
                             f"{table}: database is populated but some seed identities are missing"
                         )
             check_foreign_keys(db)
+            pin_database_versions(db, db_path=path)
             return False
 
         for table, fields in FIELDS.items():
@@ -84,8 +93,20 @@ def import_seed(path: Path, seed_dir: Path = SEED_DIR) -> bool:
                 data[table],
             )
         check_foreign_keys(db)
+        clear_pin_store(path)
+        pin_database_versions(db, db_path=path)
         return True
 
 
 if __name__ == "__main__":
-    print("Seed data imported." if import_seed(database_path()) else "Seed identities already present.")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pin-existing-media", action="store_true",
+                        help="Pin existing versions using the original media, without importing seeds.")
+    if parser.parse_args().pin_existing_media:
+        path = database_path()
+        with closing(connect(path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            pin_database_versions(db, db_path=path)
+        print("Existing version media snapshots checked.")
+    else:
+        print("Seed data imported." if import_seed(database_path()) else "Seed identities already present.")

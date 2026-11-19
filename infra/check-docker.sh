@@ -134,6 +134,7 @@ docker exec "$container" python database/import_seed.py
 snapshot="import sqlite3, os; db=sqlite3.connect(os.environ['ZHIYA_DB_PATH']); print(db.execute('select count(*) from storybooks').fetchone()[0])"
 count=$(docker exec "$container" python -c "$snapshot")
 test "$count" -gt 0
+docker exec "$container" python -c "from app.services.story_media import SEED_COVER_SOURCE_REF as S, resolve_cover_asset as r; n = sum(r(i, 1, 'LIBRARY', S) is not None for i in range(1, 100)); assert n == 20, n"
 docker restart "$container"
 test "$(docker exec "$container" python -c "$snapshot")" = "$count"
 attempt=0

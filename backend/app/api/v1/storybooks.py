@@ -6,7 +6,15 @@ from typing import Literal
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.api.v1.auth import authorized_db, error
+from app.api.v1.auth import Principal, authorized_db, error
+from app.services.story_media import (
+    MediaDependencyError,
+    cover_ref_from_manifest,
+    ensure_media_dependencies,
+    page_image_ref_for,
+    page_image_ref_from_manifest,
+    pin_version_media,
+)
 
 router = APIRouter(prefix="/api/v1")
 MAX_ID = 9007199254740991
@@ -15,12 +23,16 @@ AGES = {"AGE_3_4": (3, 4), "AGE_4_5": (4, 5), "AGE_5_6": (5, 6)}
 AGE_LABELS = {"AGE_3_4": "3～4 岁", "AGE_4_5": "4～5 岁", "AGE_5_6": "5～6 岁"}
 
 
-def page_object(page_row) -> dict:
+def page_object(db: sqlite3.Connection, page_row, *, manifest: dict | None = None) -> dict:
+    image_ref = (
+        page_image_ref_from_manifest(page_row["version_id"], page_row["page_no"], manifest)
+        if manifest is not None
+        else page_image_ref_for(db, page_row["version_id"], page_row["page_no"])
+    )
     return {
         "pageNumber": page_row["page_no"],
         "text": page_row["body_text"],
-        # No verified, version-bound media resolver exists yet. Never expose seed paths.
-        "imageRef": None,
+        "imageRef": image_ref,
         "defaultNextPageNumber": page_row["default_next_page_number"],
     }
 
@@ -33,11 +45,15 @@ def version_object(db, row):
         "SELECT * FROM story_branches WHERE version_id = ? AND review_status = 'APPROVED' ORDER BY id",
         (row["id"],),
     ).fetchall()
+    source_type = row["storybook_source_type"] if "storybook_source_type" in row.keys() else (
+        db.execute("SELECT source_type FROM storybooks WHERE id = ?", (row["storybook_id"],)).fetchone()["source_type"]
+    )
+    manifest = pin_version_media(db, row, source_type=source_type, pages=pages)
     return {
         "storybookId": row["storybook_id"], "storyVersionId": row["id"],
         "versionNumber": row["version_no"], "title": row["title"], "status": row["status"],
-        "coverRef": None,
-        "pages": [page_object(p) for p in pages],
+        "coverRef": cover_ref_from_manifest(row["id"], manifest),
+        "pages": [page_object(db, p, manifest=manifest) for p in pages],
         "branches": [{"branchId": b["id"], "fromPageNumber": b["from_page_no"],
                       "nextPageNumber": b["next_page_no"], "choiceLabel": b["choice_label"],
                       "reviewStatus": b["review_status"]} for b in branches],
@@ -91,18 +107,20 @@ def list_storybooks(request: Request, age_band: AgeBand | None = Query(default=N
             # Avoid exceeding SQLite's signed 64-bit integer range for very large pages.
             offset = min((page - 1) * page_size, 9223372036854775807)
             rows = db.execute(
-                "SELECT v.* FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id WHERE "
+                "SELECT v.*, b.source_type AS storybook_source_type FROM story_versions v "
+                "JOIN storybooks b ON b.id = v.storybook_id WHERE "
                 + " AND ".join(conditions) + " ORDER BY v.storybook_id, v.version_no DESC LIMIT ? OFFSET ?",
                 (*params, page_size, offset),
             ).fetchall()
+            ensure_media_dependencies()
             items = [version_object(db, row) for row in rows]
             return {"data": {"items": items, "page": page, "pageSize": page_size}, "requestId": request.state.request_id}
-    except sqlite3.Error:
+    except (sqlite3.Error, MediaDependencyError):
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
 
 
-def readable_story_version(db, principal, version_id: int):
-    """Apply the same live content permissions to detail and cached page responses."""
+def readable_story_version(db, principal: Principal, version_id: int):
+    """Apply the same live content permissions to detail, media, and cached page responses."""
     guardian = principal.guardian_id
     child = principal.role == "CHILD"
     grant_filter = (
@@ -119,7 +137,8 @@ def readable_story_version(db, principal, version_id: int):
     params = ((version_id, principal.grant_id, guardian, True, guardian, principal.grant_id, principal.profile_id)
               if child else (version_id, guardian, True, guardian, guardian))
     return db.execute(
-        "SELECT v.* FROM story_versions v JOIN storybooks b ON b.id = v.storybook_id "
+        "SELECT v.*, b.source_type AS storybook_source_type FROM story_versions v "
+        "JOIN storybooks b ON b.id = v.storybook_id "
         f"WHERE v.id = ? {grant_filter}AND (" + VISIBLE +
         " OR (v.status = 'RETIRED' AND v.reviewed_by_id IS NOT NULL AND v.reviewed_at IS NOT NULL "
         f"AND b.source_type = 'LIBRARY' AND {active_session_filter}))",
@@ -137,7 +156,7 @@ def get_story_version(request: Request, version_id: int = Path(ge=1, le=90071992
             if not row:
                 return error(request, 404, "RESOURCE_NOT_FOUND", "绘本不可用")
             return {"data": version_object(db, row), "requestId": request.state.request_id}
-    except sqlite3.Error:
+    except (sqlite3.Error, MediaDependencyError):
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
 
 
