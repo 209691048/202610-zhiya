@@ -89,6 +89,9 @@ npm --prefix frontend run build
 - [知识库资源交付 v2.5](knowledge-base_v2.5/资源交付说明_v2.5.md)
 - [交互原型入口](prototype/README.md)
 - [4.3C 硬件工程与验收说明](hardware/README.md)
+- [P6 软件测试文档](docs/testing/p6/P6-测试文档.md)
+- [P6 验收演示脚本](docs/testing/p6/P6-演示脚本.md)
+- [P6 测试与验收程序](qa/p6/README.md)
 
 选题报告保留立项方案。需求说明书 v0.3 记录当前 4.3C 硬件方案，仍待团队评审。功能范围、优先级及验收指标以团队评审形成的需求基线为准。
 
