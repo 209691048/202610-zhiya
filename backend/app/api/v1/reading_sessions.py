@@ -94,8 +94,12 @@ class ModeSettings(BaseModel):
 def current_question(db: sqlite3.Connection, session: sqlite3.Row) -> sqlite3.Row | None:
     questions = db.execute(
         """SELECT output_text, response_json FROM interaction_events
-           WHERE session_id = ? AND version_id = ? AND page_no = ? AND event_type = 'QUESTION'
+           WHERE session_id = ? AND version_id = ? AND page_no = ?
+             AND (event_type = 'QUESTION' OR
+                  (event_type = 'FEEDBACK' AND feedback IN ('UNDERSTOOD', 'NOT_UNDERSTOOD')))
              AND result_status IN ('SUCCESS', 'FALLBACK') AND output_text IS NOT NULL
+             AND COALESCE(strategy_type, json_extract(response_json, '$.data.strategyType'), '')
+                 NOT IN ('SKIP', 'SAFETY_BLOCK')
            ORDER BY id DESC""",
         (session["id"], session["version_id"], session["current_page_no"]),
     )
@@ -196,6 +200,17 @@ def list_sessions(request: Request, page: int = Query(default=1, ge=1, le=MAX_ID
         return error(request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂不可用", retryable=True)
 
 
+def session_event_object(event: sqlite3.Row) -> dict:
+    data = {"interactionEventId": event["id"], "eventType": event["event_type"], "pageNumber": event["page_no"]}
+    # Only project a finalized guidance response; older rows may contain unverified text.
+    if (event["event_type"] in ("QUESTION", "FEEDBACK") and event["strategy_type"]
+            and event["saved_id"] == event["id"]):
+        data.update(outputText=event["output_text"], strategyType=event["strategy_type"])
+        if event["feedback"] is not None:
+            data["feedback"] = event["feedback"]
+    return data
+
+
 @router.get("/{session_id}")
 def get_session(request: Request, session_id: int = Path(ge=1, le=MAX_ID),
                 view: Literal["reading", "deletion-status"] = "reading"):
@@ -215,7 +230,9 @@ def get_session(request: Request, session_id: int = Path(ge=1, le=MAX_ID),
             row = owned_session(db, session_id, principal)
             if not row:
                 return error(request, 404, "RESOURCE_NOT_FOUND", "会话不可用")
-            event_query = "SELECT id, event_type, page_no FROM interaction_events WHERE session_id = ?"
+            event_query = """SELECT id, event_type, page_no, feedback, output_text, strategy_type,
+                                    json_extract(response_json, '$.data.interactionEventId') AS saved_id
+                             FROM interaction_events WHERE session_id = ?"""
             event_params = [session_id]
             if principal.role == "CHILD":
                 event_query += " AND page_no = ?"
@@ -226,8 +243,7 @@ def get_session(request: Request, session_id: int = Path(ge=1, le=MAX_ID),
                 report_row = db.execute("SELECT * FROM reading_reports WHERE session_id = ?", (session_id,)).fetchone()
                 report = report_object(session_id, report_row)
             data = {"session": session_object(row),
-                    "events": [{"interactionEventId": e["id"], "eventType": e["event_type"],
-                                "pageNumber": e["page_no"]} for e in events],
+                    "events": [session_event_object(event) for event in events],
                     "report": report}
             if principal.role == "CHILD" and row["status"] == "IN_PROGRESS":
                 data["answerOptions"] = child_answer_options(db, row)

@@ -258,6 +258,16 @@
 
 API-012 会隐藏已撤回绘本的阅读记录。API-013 增加可选 `view=deletion-status`，复用 API-014 的归属检查，只向家长返回本人记录是否存在。默认阅读响应、会话状态机与数据库结构沿用现有设计。前端在删除结果不明且记录未列入历史时使用此视图。[接口契约](../design/api-contract.md)和[删除测试](../../backend/tests/test_deletes.py)
 
+### DCL-031｜阅读引导的保存、刷新与儿童输出
+
+2026-11-19，G05 引导、G07 业务后端、G08 模型网关和 G09 知识检索。关联 FR-07、AI-07、AC-06。状态为已修订，待评审。[PR #47](https://github.com/MumLauds/202610-zhiya/pull/47)
+
+首次提问和理解反馈使用档案年龄、绘本主题及当前页。模型从当前页候选问句中选择，儿童端展示受控文本。跳过直接记录反馈。只有仍有效的执行令牌能提交事件和引用。刷新会话时，已保存完整响应的引导事件提供正文和策略。字段、枚举及会话可见范围沿用现有定义，无数据库迁移。[接口契约](../design/api-contract.md) · [G05 降级约定](../design/agent-degradation.md) · [阅读活动图 5-3](../design/diagrams/system/fig-5-03-reading-activity.puml)
+
+复审增加儿童答题和连续反馈的验收。儿童模式的题目与安全回退使用可直接作答的是非问句，按钮随题保存。理解反馈跟随最近展示的题目，首题生成期间可跳过。模型未配置、鉴权失败及限流记为可重放的 503。真实超时保存安全回退。[引导时序图 5-5](../design/diagrams/system/fig-5-05-agent-sequence.puml) · [生成与校验时序图 5-9](../design/diagrams/system/fig-5-09-agent-validation-sequence.puml)
+
+从正式 HTTP 入口以临时 SQLite 和模拟模型覆盖提问、反馈、刷新、重放、权限及逾期写入。模型网关的默认请求体保留 `thinking.type=disabled`，兼容端点可显式关闭。[接口回归用例](../../backend/tests/test_interactions.py) · [网关回归用例](../../backend/tests/test_backend.py)
+
 ## 后续追加模板
 
 复制以下模板并使用下一个未占用编号；仅在有证据时填写“已确认”或“验证通过”。
