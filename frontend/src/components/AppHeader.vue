@@ -10,13 +10,14 @@ const items = [
   { label: '首页', path: 'home', icon: '/assets/figma-prototype/icon-house.svg' },
   { label: '绘本馆', path: 'library', icon: '/assets/figma-prototype/icon-bookmark.svg' },
   { label: '成长记录', path: 'account/growth', icon: '/assets/figma-prototype/icon-clock.svg' },
-  { label: '亲子时光', path: 'account/overview', icon: '/assets/figma-prototype/icon-users.svg' },
+  { label: '个人中心', path: 'account/overview', icon: '/assets/figma-prototype/icon-users.svg' },
 ]
 
 function current(path) {
   if (path === 'home') return ['home'].includes(props.route.name)
   if (path === 'library') return ['library', 'detail', 'reader'].includes(props.route.name)
-  return props.route.name === 'account'
+  if (path === 'account/growth') return props.route.name === 'account' && props.route.section === 'growth'
+  return props.route.name === 'account' && props.route.section !== 'growth'
 }
 </script>
 

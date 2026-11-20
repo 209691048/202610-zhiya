@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { roundedTrapezoidPath } from '../utils/coverShape'
 
 const props = defineProps({
   books: { type: Array, required: true },
@@ -10,6 +11,8 @@ const emit = defineEmits(['select'])
 const wheel = ref(null)
 const dots = ref(null)
 const panelWidth = ref(900)
+const wheelSpread = ref(.77)
+const coverClipPath = roundedTrapezoidPath(87.9, 100)
 let observer = null
 
 const selectedIndex = computed(() => Math.max(0, props.books.findIndex((book) => book.id === props.selectedId)))
@@ -49,18 +52,21 @@ function styleFor(index) {
   const offset = offsetFor(index)
   const distance = Math.abs(offset)
   const direction = Math.sign(offset)
+  const compact = panelWidth.value < 620
+  const nearOffset = compact ? .46 : .30
+  const farOffset = compact ? .82 : .55
   let spec
   if (distance === 0) {
-    spec = { x: 0, y: 8, z: 55, scale: 1.08, rotate: 0, opacity: 1, layer: 90 }
+    spec = { x: 0, y: 6, z: 70, scale: 1.12, rotate: 0, opacity: 1, layer: 90 }
   } else if (distance === 1) {
-    spec = { x: direction * panelWidth.value * .22, y: 9, z: 10, scale: .68, rotate: -direction * 15, opacity: .7, layer: 60 }
+    spec = { x: direction * panelWidth.value * nearOffset, y: 10, z: 10, scale: .78, rotate: -direction * 13, opacity: .82, layer: 60 }
   } else if (distance === 2) {
-    spec = { x: direction * panelWidth.value * .38, y: 18, z: -40, scale: .46, rotate: -direction * 25, opacity: .28, layer: 30 }
+    spec = { x: direction * panelWidth.value * farOffset, y: 18, z: -40, scale: .58, rotate: -direction * 22, opacity: .48, layer: 30 }
   } else {
-    spec = { x: direction * panelWidth.value * .48, y: 24, z: -80, scale: .4, rotate: -direction * 30, opacity: 0, layer: 10 }
+    spec = { x: direction * panelWidth.value * (compact ? .98 : .70), y: 24, z: -80, scale: .5, rotate: -direction * 28, opacity: 0, layer: 10 }
   }
   return {
-    '--wheel-x': `${spec.x}px`,
+    '--wheel-x': `${spec.x * wheelSpread.value}px`,
     '--wheel-y': `${spec.y * 3}px`,
     '--wheel-z': `${spec.z}px`,
     '--wheel-scale': String(spec.scale),
@@ -120,9 +126,16 @@ function move(step) {
         />
       </div>
       <div class="wheel-controls">
-        <button class="round-button" type="button" aria-label="切换到上一本" @click="move(-1)">‹</button>
-        <button class="round-button" type="button" aria-label="切换到下一本" @click="move(1)">›</button>
+        <button class="round-button" type="button" aria-label="切换到上一本" @click="move(-1)"><span class="arrow-glyph" aria-hidden="true">‹</span></button>
+        <button class="round-button" type="button" aria-label="切换到下一本" @click="move(1)"><span class="arrow-glyph" aria-hidden="true">›</span></button>
       </div>
     </div>
+    <svg class="wheel-cover-clip-defs" aria-hidden="true" width="0" height="0">
+      <defs>
+        <clipPath id="zhiya-wheel-cover-clip" clipPathUnits="objectBoundingBox">
+          <path id="zhiya-wheel-cover-clip-path" :d="coverClipPath" />
+        </clipPath>
+      </defs>
+    </svg>
   </section>
 </template>

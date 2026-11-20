@@ -22,7 +22,7 @@ const ageOptions = [
 ]
 const topicOptions = ['亲子依恋', '安全感', '想象力', '友谊', '自然观察', '勇气', '生命成长'].map((topic) => [topic, topic])
 const options = computed(() => category.value === 'age' ? ageOptions : category.value === 'topic' ? topicOptions : [])
-const selected = computed(() => props.books.find((book) => book.id === props.selectedId) || props.books[0] || null)
+const selected = computed(() => props.selectedId ? props.books.find((book) => book.id === props.selectedId) : props.books[0])
 
 function toggleCategory(value) {
   category.value = category.value === value ? '' : value
@@ -67,7 +67,7 @@ function chooseFilter(value) {
           </p>
         </aside>
 
-        <div v-if="loading && nextPage === null" class="library-feature-card">
+        <div v-if="loading && (nextPage === null || !selected)" class="library-feature-card">
           <div class="library-feature-cover skeleton" />
           <div><div class="skeleton" style="height:22px;width:46%" /><div class="skeleton" style="height:38px;width:68%;margin-top:13px" /></div>
         </div>
@@ -84,6 +84,7 @@ function chooseFilter(value) {
             </div>
           </div>
         </article>
+        <div v-else-if="error && books.length" class="empty-state">所选绘本尚未加载，可以重试或选择其他绘本。</div>
         <div v-else class="empty-state">
           <div>
             <h2>没有找到符合条件的可见绘本</h2>

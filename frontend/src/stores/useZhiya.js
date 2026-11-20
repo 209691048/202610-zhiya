@@ -24,7 +24,10 @@ function parseRoute(hash = location.hash) {
   const name = parts[0] || 'home'
   if (name === 'account') return { name, section: parts[1] || 'overview' }
   if (name === 'child') return { name, sessionId: Number(parts[1]) || null }
-  if (name === 'detail') return { name, versionId: Number(parts[1]) || null }
+  if (name === 'detail') {
+    const source = ['api', 'preview'].includes(parts[1]) ? parts[1] : null
+    return { name, source, versionId: Number(parts[source ? 2 : 1]) || null }
+  }
   if (name === 'reader' && parts[1] === 'preview') return { name, previewVersionId: Number(parts[2]) || null }
   if (name === 'reader') return { name, sessionId: Number(parts[1]) || null }
   if (['library', 'auth'].includes(name)) return { name }
@@ -60,13 +63,16 @@ const state = reactive({
   booksError: '',
   nextBooksPage: null,
   bookFilters: { ageBand: '', topic: '' },
-  selectedBookId: localStorage.getItem('zhiya.selectedBookId') || previewBooks[0].id,
+  selectedBookId: '',
+  manualBookId: '',
+  pendingBookRestore: null,
   currentBook: null,
   detailLoading: false,
   currentSession: null,
   currentEvents: [],
   currentReport: null,
   sessionLoading: false,
+  readerLoadRetryable: false,
   sessionBusy: false,
   profileDeleteBusyId: null,
   sessionDeleteBusyId: null,
@@ -86,7 +92,12 @@ let authEpoch = 0
 let knownCsrf = readCsrfCookie()
 let profilesRequest = 0
 let booksRequest = 0
+let firstShelfPage = null
+let previewFromEmptyCatalog = false
+let selectionRevision = 0
+let loadedBookFilters = null
 let detailRequest = 0
+const detailReadsByVersion = new Map()
 let sessionsRequest = 0
 let readingEpoch = 0
 let pendingReading = null
@@ -108,13 +119,17 @@ function clearAccountViews() {
   state.currentEvents = []
   state.currentReport = null
   state.bookFilters = { ageBand: '', topic: '' }
-  state.selectedBookId = previewBooks[0].id
+  state.selectedBookId = ''
+  firstShelfPage = null
+  state.pendingBookRestore = null
+  detailReadsByVersion.clear()
   profilesRequest += 1
   booksRequest += 1
   sessionsRequest += 1
   detailRequest += 1
   readingEpoch += 1
   state.sessionLoading = state.sessionBusy = state.sessionsLoading = state.detailLoading = state.booksLoading = false
+  state.readerLoadRetryable = false
   state.readingSyncRequired = false
   state.childMode = null
   state.profileDeleteBusyId = null
@@ -126,12 +141,13 @@ function clearAccountViews() {
 function resetAuthentication() {
   authEpoch += 1
   knownCsrf = readCsrfCookie()
-  clearAccountViews()
+  if (state.auth.authenticated) localStorage.removeItem(bookSelectionKey('preview'))
   rememberChildSession(null)
-  for (const key of ['account', 'activeProfileId', 'selectedBookId', 'plan', 'guardianNickname']) {
+  for (const key of ['account', 'activeProfileId', 'selectedBookId', 'previewSelectedBookId', 'bookSelectionExplicit', 'plan', 'guardianNickname']) {
     localStorage.removeItem(`zhiya.${key}`)
   }
   state.auth = { status: 'anonymous', authenticated: false, role: 'GUARDIAN', accountId: null, account: '', nickname: '知芽家长' }
+  clearAccountViews()
 }
 
 function activeProfile() {
@@ -150,11 +166,7 @@ function setToast(message, tone = 'info') {
 
 function navigate(path) {
   const target = `#${String(path).replace(/^#/, '')}`
-  if (location.hash === target) {
-    state.route = parseRoute()
-  } else {
-    location.hash = target
-  }
+  if (location.hash !== target) location.hash = target
 }
 
 function replaceRoute(path) {
@@ -179,16 +191,23 @@ function updateBodyView() {
   document.body.dataset.view = state.route.name
 }
 
+function bookSelectionKey(source) {
+  if (source === 'api') return 'zhiya.selectedBookId'
+  return state.auth.authenticated ? `zhiya.previewSelectedBookId:${state.auth.account}` : 'zhiya.guestPreviewSelectedBookId'
+}
+
 function applyBooks(items, source, message = '') {
   state.books = items
   state.booksSource = source
   state.booksError = message
-  if (!items.some((book) => book.id === state.selectedBookId)) {
-    state.selectedBookId = items[0]?.id || ''
+  state.manualBookId = localStorage.getItem(bookSelectionKey(source)) || ''
+  if (source === 'preview' || !items.some((book) => book.id === state.selectedBookId)) {
+    state.selectedBookId = items.find((book) => book.id === state.manualBookId)?.id || ''
   }
 }
 
-function loadPreviewBooks(message = '') {
+function loadPreviewBooks(message = '', emptyCatalog = false) {
+  previewFromEmptyCatalog = emptyCatalog
   state.nextBooksPage = null
   const { ageBand, topic } = state.bookFilters
   const filtered = previewBooks.filter((book) => {
@@ -199,8 +218,21 @@ function loadPreviewBooks(message = '') {
   applyBooks(filtered, 'preview', message)
 }
 
-function loadBooks(filters = {}) {
-  state.bookFilters = { ...state.bookFilters, ...filters }
+function shelfRestoreTarget() {
+  if (state.pendingBookRestore) return state.pendingBookRestore
+  if (state.booksSource !== 'api' || loadedBookFilters !== state.bookFilters) return null
+  if (state.books.some((book) => book.id === state.manualBookId)) return state.manualBookId
+  return null
+}
+
+function loadBooks(filters = {}, restoreBookId = shelfRestoreTarget()) {
+  const next = { ...state.bookFilters, ...filters }
+  if (next.ageBand !== state.bookFilters.ageBand || next.topic !== state.bookFilters.topic) {
+    state.bookFilters = next
+    state.pendingBookRestore = null
+  } else {
+    state.pendingBookRestore = restoreBookId
+  }
   state.nextBooksPage = null
   return fetchBooksPage(1)
 }
@@ -208,45 +240,68 @@ function loadBooks(filters = {}) {
 async function fetchBooksPage(page) {
   const epoch = authEpoch
   const request = ++booksRequest
+  const selectionAtStart = selectionRevision
+  if (page === 1) previewFromEmptyCatalog = false
   const pageSize = 30
+  const keepSelection = state.pendingBookRestore !== null || Boolean(state.booksError && state.selectedBookId)
   state.booksLoading = true
   state.booksError = ''
+  let pageRequest
   try {
     if (!state.auth.authenticated) {
       loadPreviewBooks('登录后可读取组内已发布绘本，当前展示本地设计预览。')
       return
     }
-    const items = await listStorybooks({
+    pageRequest = listStorybooks({
       ageBand: state.bookFilters.ageBand || undefined,
       topic: state.bookFilters.topic || undefined,
       page,
       pageSize,
     })
+    if (page === 1) firstShelfPage = pageRequest
+    const items = await pageRequest
     if (epoch !== authEpoch || request !== booksRequest) return
     state.nextBooksPage = items.length === pageSize ? page + 1 : null
     if (page > 1) {
       const existing = new Set(state.books.map((book) => book.storyVersionId))
       const added = items.filter((book) => !existing.has(book.storyVersionId)).map(mapApiBook)
       applyBooks([...state.books, ...added], 'api')
-      if (added.length) selectBook(added[0].id)
-      return
+      if (!keepSelection && selectionAtStart === selectionRevision && added.length && !added.some((book) => book.id === state.selectedBookId)) {
+        state.selectedBookId = added[0].id
+      }
+    } else if (!items.length && !state.bookFilters.ageBand && !state.bookFilters.topic) {
+      loadPreviewBooks('后端当前没有可见的已发布绘本，当前展示本地设计预览。', true)
+    } else {
+      loadedBookFilters = state.bookFilters
+      applyBooks(items.map(mapApiBook), 'api')
     }
-    if (!items.length && !state.bookFilters.ageBand && !state.bookFilters.topic) {
-      loadPreviewBooks('后端当前没有可见的已发布绘本，当前展示本地设计预览。')
-      return
+    if (state.pendingBookRestore) {
+      const key = bookSelectionKey('api')
+      if (localStorage.getItem(key) !== state.pendingBookRestore) {
+        state.pendingBookRestore = null
+      } else if (state.books.some((book) => book.id === state.pendingBookRestore)) {
+        state.selectedBookId = state.pendingBookRestore
+        state.pendingBookRestore = null
+      } else if (state.nextBooksPage) {
+        await fetchBooksPage(state.nextBooksPage)
+      } else {
+        if (!state.bookFilters.ageBand && !state.bookFilters.topic) localStorage.removeItem(key)
+        state.pendingBookRestore = null
+      }
     }
-    applyBooks(items.map(mapApiBook), 'api')
   } catch (error) {
     if (epoch !== authEpoch || request !== booksRequest) return
     if (error instanceof ApiError && error.status === 401) {
       resetAuthentication()
       loadPreviewBooks('登录后读取后端绘本，当前展示本地设计预览。')
-    } else if (state.nextBooksPage !== null) {
+    } else if (state.pendingBookRestore || state.nextBooksPage !== null) {
+      state.nextBooksPage = page
       state.booksError = error.message || '书架加载失败，请重试。'
     } else {
       loadPreviewBooks(error.message || '绘本列表暂时不可用，已切换到本地预览。')
     }
   } finally {
+    if (firstShelfPage === pageRequest) firstShelfPage = null
     if (request === booksRequest) state.booksLoading = false
   }
 }
@@ -258,10 +313,7 @@ function loadMoreBooks() {
 }
 
 function refreshShelfAfterNotFound() {
-  if (state.booksLoading && state.nextBooksPage === null) {
-    // The old shelf may still be visible while a new filter's first page loads.
-    return loadBooks()
-  }
+  state.pendingBookRestore = shelfRestoreTarget()
   state.nextBooksPage = 1
   return fetchBooksPage(1)
 }
@@ -368,8 +420,8 @@ async function refreshIdentity() {
       await Promise.all([loadBooks(), handleRoute()])
       return
     }
-    await loadBooks()
-    if (epoch !== authEpoch) return
+    await Promise.all([loadBooks({}, localStorage.getItem(bookSelectionKey('api'))), handleRoute()])
+    return
   } catch (error) {
     if (epoch !== authEpoch) return
     const remembered = savedChildSessionId()
@@ -398,6 +450,8 @@ async function refreshIdentity() {
     } else if (previous === 'checking' || previous === 'unavailable') {
       state.auth.status = 'unavailable'
       loadPreviewBooks(state.health === 'offline' ? '后端暂未启动，当前展示本地设计预览。' : describeApiError(error))
+      // A failed identity retry does not invalidate an online detail already loaded for this route.
+      if (state.route.name === 'detail' && state.currentBook?.source === 'api' && state.currentBook.storyVersionId === state.route.versionId) return
     } else {
       return
     }
@@ -630,16 +684,59 @@ async function removeReadingSession(sessionId, confirmedUnlisted = false) {
 
 function selectBook(bookId) {
   if (!state.books.some((book) => book.id === bookId)) return
+  selectionRevision += 1
+  if (state.booksSource === 'api') {
+    // A first-page refresh will replace the visible shelf, including the book just picked.
+    const refreshingSameShelf = loadedBookFilters === state.bookFilters && (firstShelfPage || state.nextBooksPage === 1)
+    state.pendingBookRestore = refreshingSameShelf ? bookId : null
+  }
   state.selectedBookId = bookId
-  localStorage.setItem('zhiya.selectedBookId', bookId)
+  state.manualBookId = bookId
+  localStorage.setItem(bookSelectionKey(state.booksSource), bookId)
 }
 
 function openDetail(bookOrVersionId) {
   const versionId = Number(bookOrVersionId?.storyVersionId || bookOrVersionId)
-  if (versionId) navigate(`detail/${versionId}`)
+  const source = bookOrVersionId?.source
+  if (versionId) navigate(source ? `detail/${source}/${versionId}` : `detail/${versionId}`)
 }
 
-async function loadDetail(versionId) {
+async function readOnlineDetail(versionId) {
+  // Keep overlapping reads in start order. A failed retry cannot settle whether a book is still available.
+  const reads = detailReadsByVersion.get(versionId) || []
+  const read = { outcome: 'pending', filters: state.bookFilters, epoch: authEpoch }
+  reads.push(read)
+  detailReadsByVersion.set(versionId, reads)
+  try {
+    const version = await getStoryVersion(versionId)
+    read.outcome = 'available'
+    return version
+  } catch (error) {
+    read.outcome = error.status === 404 ? 'missing' : 'failed'
+    throw error
+  } finally {
+    if (detailReadsByVersion.get(versionId) === reads) {
+      while (reads.at(-1)?.outcome === 'failed') reads.pop()
+      const latest = reads.at(-1)
+      if (latest?.outcome !== 'pending') {
+        detailReadsByVersion.delete(versionId)
+        if (latest?.outcome === 'missing' && latest.epoch === authEpoch && latest.filters === state.bookFilters) {
+          const key = bookSelectionKey('api')
+          const missingId = `version-${versionId}`
+          if (state.auth.authenticated && localStorage.getItem(key) === missingId) localStorage.removeItem(key)
+          if (state.pendingBookRestore === missingId) state.pendingBookRestore = null
+          const remaining = state.books.filter((book) => book.storyVersionId !== versionId)
+          const listed = state.booksSource === 'api' && remaining.length < state.books.length
+          if (listed) applyBooks(remaining, 'api')
+          if (listed || state.booksLoading) void refreshShelfAfterNotFound()
+        }
+      }
+    }
+  }
+}
+
+async function loadDetail(id, source = null) {
+  const versionId = Number(id)
   const epoch = authEpoch
   const request = ++detailRequest
   const route = location.hash
@@ -647,35 +744,53 @@ async function loadDetail(versionId) {
   state.detailLoading = true
   state.currentBook = null
   try {
-    const cached = state.books.find((book) => book.storyVersionId === Number(versionId))
-    if (cached?.source === 'preview') {
-      state.currentBook = cached
+    const preview = previewBooks.find((book) => book.storyVersionId === versionId)
+    // Legacy numeric links may refer to a demo when the server has confirmed an empty catalog.
+    if (!source && preview && firstShelfPage && state.booksSource === 'preview') {
+      await firstShelfPage.catch(() => {})
+      if (!isCurrent()) return
+    }
+    if (source === 'preview' || (!source && preview && (state.auth.status === 'anonymous' || previewFromEmptyCatalog))) {
+      state.currentBook = preview || null
       return
     }
-    const version = await getStoryVersion(Number(versionId))
+    const version = await readOnlineDetail(versionId)
     if (!isCurrent()) return
     state.currentBook = mapApiBook(version)
+    // Keep a resolved legacy link online across identity retries on this detail page.
+    if (!source && state.route.name === 'detail' && state.route.versionId === versionId) state.route.source = 'api'
   } catch (error) {
-    if (!isCurrent()) return
-    if (error.status === 404 && state.booksSource === 'api') {
-      const remaining = state.books.filter((book) => book.storyVersionId !== Number(versionId))
-      const removed = remaining.length < state.books.length
-      applyBooks(remaining, 'api')
-      if (removed || state.booksLoading) void refreshShelfAfterNotFound()
-    }
-    setToast(describeApiError(error), 'error')
+    if (isCurrent()) setToast(describeApiError(error), 'error')
   } finally {
-    if (isCurrent()) state.detailLoading = false
+    if (epoch === authEpoch && request === detailRequest) state.detailLoading = false
+  }
+}
+
+async function retryReadingIdentity() {
+  if (state.auth.status !== 'unavailable' || state.profilesLoading) return
+  const epoch = authEpoch
+  const route = location.hash
+  await refreshIdentity()
+  if (epoch === authEpoch && route === location.hash && state.auth.status === 'unavailable') {
+    setToast('暂时无法核验家长身份，请稍后重试。', 'error')
   }
 }
 
 async function startReading(book) {
   if (!book || state.sessionBusy) return
   const epoch = authEpoch
+  if (book.source !== 'preview' && state.auth.status !== 'authenticated') {
+    if (state.auth.status === 'unavailable') {
+      await retryReadingIdentity()
+    } else if (state.auth.status === 'anonymous') {
+      navigate('auth')
+    }
+    return
+  }
   state.currentBook = book
   state.currentEvents = []
   state.currentReport = null
-  if (book.source === 'preview' || !state.auth.authenticated) {
+  if (book.source === 'preview') {
     state.currentSession = {
       preview: true,
       readingSessionId: `preview-${book.storyVersionId}`,
@@ -694,7 +809,7 @@ async function startReading(book) {
     navigate('account/children')
     return
   }
-  // A new shelf query replaces the filters object; loading another page keeps it.
+  // Reapplying the same filters or loading another page keeps the same shelf.
   const filtersAtStart = state.bookFilters
   try {
     state.sessionBusy = true
@@ -719,12 +834,16 @@ async function startReading(book) {
         setToast(profiles.length ? '原儿童档案已失效，请到个人中心重新选择儿童档案。' : '原儿童档案已失效，请先添加儿童档案。', 'error')
         return
       }
-      if (state.booksSource === 'api' && state.bookFilters === filtersAtStart) void refreshShelfAfterNotFound()
+      if (state.bookFilters === filtersAtStart) void refreshShelfAfterNotFound()
     }
     setToast(describeApiError(error), 'error')
   } finally {
     if (epoch === authEpoch) state.sessionBusy = false
   }
+}
+
+function isTemporaryReadFailure(error) {
+  return error.status === 503 || error.status === 504 || (error.status === 0 && error.retryable)
 }
 
 async function loadReaderRoute() {
@@ -734,6 +853,7 @@ async function loadReaderRoute() {
   const routeHash = location.hash
   const isCurrent = () => epoch === authEpoch && generation === readingEpoch && routeHash === location.hash
   state.sessionLoading = true
+  state.readerLoadRetryable = false
   state.sessionBusy = false
   state.readingSyncRequired = false
   pendingReading = null
@@ -760,13 +880,28 @@ async function loadReaderRoute() {
     if (!route.sessionId) return
     const detail = await getReadingSession(route.sessionId)
     if (!isCurrent()) return
-    const cached = state.books.find((book) => book.source === 'api' && book.storyVersionId === detail.session.storyVersionId)
-    const book = cached || mapApiBook(await getStoryVersion(detail.session.storyVersionId))
+    const versionId = detail.session.storyVersionId
+    const shelfBook = () => state.books.find((item) => item.source === 'api' && item.storyVersionId === versionId)
+    let book = shelfBook()
+    if (!book) {
+      try {
+        book = mapApiBook(await readOnlineDetail(versionId))
+      } catch (error) {
+        if (!isCurrent()) return
+        if (!isTemporaryReadFailure(error)) throw error
+        // On cold start the authorized shelf can still be loading the same full version.
+        if (firstShelfPage) await firstShelfPage.catch(() => {})
+        if (!isCurrent()) return
+        book = shelfBook()
+        if (!book) throw error
+      }
+    }
     if (!isCurrent()) return
     applyReadingDetail(detail)
     state.currentBook = book
   } catch (error) {
     if (isCurrent()) {
+      state.readerLoadRetryable = isTemporaryReadFailure(error)
       setToast(describeApiError(error), 'error')
       state.currentSession = null
     }
@@ -1158,9 +1293,11 @@ async function handleRoute() {
 
   const route = state.route
   if (route.name === 'library') {
-    if (state.auth.authenticated && state.booksSource !== 'api') await loadBooks()
+    if (state.auth.authenticated && !state.booksLoading && state.booksSource !== 'api' && state.nextBooksPage === null) {
+      await loadBooks()
+    }
   } else if (route.name === 'detail' && route.versionId) {
-    await loadDetail(route.versionId)
+    await loadDetail(route.versionId, route.source)
   } else if (route.name === 'reader') {
     await loadReaderRoute()
   } else if (route.name === 'child') {
@@ -1209,6 +1346,7 @@ export const zhiyaActions = {
   openDetail,
   loadDetail,
   startReading,
+  retryReadingIdentity,
   startCurrentReading,
   enterChildMode,
   restoreChildMode,

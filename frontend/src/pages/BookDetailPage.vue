@@ -3,9 +3,11 @@ import { bookStatusLabel } from '../data/preview'
 defineProps({
   book: { type: Object, default: null },
   loading: { type: Boolean, default: false },
+  retryIdentity: { type: Boolean, default: false },
+  checkingIdentity: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['back', 'start'])
+const emit = defineEmits(['back', 'start', 'retry-identity'])
 </script>
 
 <template>
@@ -31,11 +33,22 @@ const emit = defineEmits(['back', 'start'])
         <p class="detail-summary">{{ book.summary }}</p>
         <blockquote v-if="book.quote" class="detail-quote">{{ book.quote }}</blockquote>
         <div class="detail-actions">
-          <button class="primary" type="button" @click="emit('start', book)">开始阅读</button>
+          <button class="primary" type="button" :disabled="retryIdentity && checkingIdentity" @click="retryIdentity ? emit('retry-identity') : emit('start', book)">
+            {{ retryIdentity ? (checkingIdentity ? '正在核验身份…' : '重试身份核验') : '开始阅读' }}
+          </button>
           <button class="secondary" type="button" @click="emit('back')">继续选书</button>
         </div>
       </div>
     </article>
+    <div v-else-if="retryIdentity" class="empty-state">
+      <div>
+        <h2>暂时无法核验家长身份</h2>
+        <p>重新核验后可继续查看这本绘本。</p>
+        <button class="primary" type="button" :disabled="checkingIdentity" @click="emit('retry-identity')">
+          {{ checkingIdentity ? '正在核验身份…' : '重试身份核验' }}
+        </button>
+      </div>
+    </div>
     <div v-else class="empty-state"><div><h2>绘本暂不可用</h2><p>可能尚未发布，或当前账号没有访问权限。</p></div></div>
   </main>
 </template>

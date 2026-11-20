@@ -9,6 +9,7 @@ const props = defineProps({
   session: { type: Object, default: null },
   report: { type: Object, default: null },
   loading: { type: Boolean, default: false },
+  canRetryLoad: { type: Boolean, default: false },
   authenticated: { type: Boolean, default: false },
   syncRequired: { type: Boolean, default: false },
   recordPage: { type: Function, required: true },
@@ -18,7 +19,7 @@ const props = defineProps({
   enterChildModeAction: { type: Function, default: async () => false },
 })
 
-const emit = defineEmits(['back', 'library', 'start-session'])
+const emit = defineEmits(['back', 'library', 'start-session', 'retry-load'])
 const flipBook = ref(null)
 const pageIndex = ref(0)
 const turnBusy = ref(false)
@@ -548,6 +549,11 @@ onBeforeUnmount(() => { stopNarration(); closeVoice() })
     </div>
   </main>
   <main v-else class="reader-page page-width">
-    <div class="empty-state"><div><h2>阅读会话暂时不可用</h2><p>请返回绘本馆，登录并重新开始阅读。</p><button class="primary" type="button" @click="emit('library')">返回绘本馆</button></div></div>
+    <div class="empty-state"><div>
+      <h2>阅读会话暂时不可用</h2>
+      <p>{{ canRetryLoad ? '加载失败，请重试以继续本次阅读。' : '请返回绘本馆，登录并重新开始阅读。' }}</p>
+      <button v-if="canRetryLoad" class="primary" type="button" @click="emit('retry-load')">重试加载</button>
+      <button :class="canRetryLoad ? 'secondary' : 'primary'" type="button" @click="emit('library')">返回绘本馆</button>
+    </div></div>
   </main>
 </template>

@@ -42,6 +42,62 @@ beforeEach(async () => {
 })
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
 
+describe('cold reader bookshelf fallback', () => {
+  it.each([
+    ['the bookshelf resolves before a 503', true, 503],
+    ['the bookshelf resolves after a 503', false, 503],
+    ['the bookshelf resolves after a 404', false, 404],
+  ])('handles the existing session when %s', async (_, bookshelfFirst, status) => {
+    localStorage.setItem('zhiya.account', 'parent-a')
+    const firstPage = deferred()
+    const bookDetail = deferred()
+    books.listStorybooks.mockClear().mockReturnValueOnce(firstPage.promise)
+    if (status === 404) books.listStorybooks.mockResolvedValueOnce([{ ...version, storyVersionId: 89 }])
+    books.getStoryVersion.mockClear().mockReturnValueOnce(bookDetail.promise)
+    reading.getReadingSession.mockClear()
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    const bootstrapping = refreshedActions.bootstrap()
+
+    await vi.waitFor(() => expect(books.getStoryVersion).toHaveBeenCalledWith(88))
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1])
+    if (bookshelfFirst) {
+      firstPage.resolve([version])
+      await vi.waitFor(() => expect(refreshed.booksSource).toBe('api'))
+      bookDetail.reject(new ApiError('暂不可用', { status }))
+    } else {
+      bookDetail.reject(new ApiError('暂不可用', { status }))
+      await vi.advanceTimersByTimeAsync(0)
+      if (status === 404) {
+        expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1, 1])
+        expect(refreshed.booksSource).toBe('api')
+      }
+      firstPage.resolve([version])
+    }
+    await bootstrapping
+
+    expect(location.hash).toBe('#reader/55')
+    expect(refreshed.sessionLoading).toBe(false)
+    expect(reading.getReadingSession.mock.calls).toEqual([[55]])
+    expect(books.getStoryVersion.mock.calls).toEqual([[88]])
+    expect(reading.createReadingSession).not.toHaveBeenCalled()
+    expect(reading.addReadingEvent).not.toHaveBeenCalled()
+    if (status === 404) {
+      expect(refreshed.books.some((book) => book.source === 'api' && book.storyVersionId === 88)).toBe(false)
+      expect(refreshed.currentSession).toBeNull()
+      expect(refreshed.currentBook).toBeNull()
+    } else {
+      expect(refreshed.currentSession).toEqual(session())
+      expect(refreshed.currentBook).toMatchObject({
+        storyVersionId: 88,
+        source: 'api',
+        title: version.title,
+        pages: version.pages.map(({ text }) => ({ text })),
+      })
+    }
+  })
+})
+
 describe('authoritative reading progress', () => {
   it('serializes page writes and rejects skipped or already visited pages', async () => {
     const request = deferred()
@@ -176,6 +232,194 @@ describe('authoritative reading progress', () => {
 })
 
 describe('account isolation and logout', () => {
+  it('does not carry a guardian’s preview selection across logout or the next login', async () => {
+    books.listStorybooks.mockResolvedValue([])
+    await actions.signIn('parent-a', 'password123')
+    expect(state.booksSource).toBe('preview')
+    const selectedId = state.books[1].id
+    actions.selectBook(selectedId)
+    expect(state.selectedBookId).toBe(selectedId)
+
+    expect(await actions.signOut()).toBe(true)
+    expect(state.booksSource).toBe('preview')
+    expect(state.selectedBookId).toBe('')
+
+    auth.login.mockResolvedValueOnce({ data: { accountId: 2 } })
+    await actions.signIn('parent-b', 'password123')
+    expect(state.auth.accountId).toBe(2)
+    expect(state.booksSource).toBe('preview')
+    expect(state.selectedBookId).toBe('')
+  })
+
+  it.each([
+    ['same guardian with the book still visible', true, false, true],
+    ['same guardian with the book removed', false, false, false],
+    ['a different guardian who can also see the book', true, true, false],
+  ])('restores manual book selection after refresh only when allowed (%s)', async (_, bookVisible, switchAccount, restoresSelection) => {
+    const secondBook = { ...version, storyVersionId: 99, title: '第二本测试绘本' }
+    books.listStorybooks.mockResolvedValue([version, secondBook])
+    await actions.signIn('parent-a', 'password123')
+    const selectedId = state.books[1].id
+    actions.selectBook(selectedId)
+    expect(state.selectedBookId).toBe(selectedId)
+
+    books.listStorybooks.mockResolvedValue(bookVisible ? [version, secondBook] : [version])
+    window.history.replaceState({}, '', '/#home')
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    if (switchAccount) {
+      auth.login.mockResolvedValueOnce({ data: { accountId: 2 } })
+      await refreshedActions.signIn('parent-b', 'password123')
+    } else {
+      await refreshedActions.bootstrap()
+    }
+
+    expect(refreshed.auth.authenticated).toBe(true)
+    expect(refreshed.booksSource).toBe('api')
+    expect(refreshed.selectedBookId).toBe(restoresSelection ? selectedId : '')
+  })
+
+  it.each([
+    ['with a manual selection', true],
+    ['after loading more without a manual selection', false],
+  ])('refreshes a paginated bookshelf %s', async (_, manuallySelect) => {
+    const firstPage = Array.from({ length: 30 }, (_, index) => ({ ...version, storyVersionId: index + 1 }))
+    const laterBook = { ...version, storyVersionId: 31 }
+    books.listStorybooks.mockImplementation(async ({ page }) => page === 1 ? firstPage : [laterBook])
+    await actions.signIn('parent-a', 'password123')
+    await actions.loadMoreBooks()
+    const laterBookId = state.books.at(-1).id
+    expect(state.books.at(-1).storyVersionId).toBe(laterBook.storyVersionId)
+    expect(state.selectedBookId).toBe(laterBookId)
+    if (manuallySelect) actions.selectBook(laterBookId)
+
+    books.listStorybooks.mockClear()
+    window.history.replaceState({}, '', '/#home')
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    await refreshedActions.bootstrap()
+
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual(manuallySelect ? [1, 2] : [1])
+    expect(refreshed.selectedBookId).toBe(manuallySelect ? laterBookId : '')
+  })
+
+  it.each([
+    ['the first page fails', 1, null, [1, 1, 2, 3]],
+    ['the second page fails', 2, null, [1, 2, 2, 3]],
+    ['the guardian changes selection after the second page fails', 2, 'version-5', [1, 2, 2]],
+  ])('retries a paginated bookshelf restore when %s', async (_, failedPage, manualId, expectedPages) => {
+    const savedId = 'version-63'
+    const selectionKey = 'zhiya.selectedBookId'
+    localStorage.setItem('zhiya.account', 'parent-a')
+    localStorage.setItem(selectionKey, savedId)
+    window.history.replaceState({}, '', '/#home')
+    const catalog = Array.from({ length: 63 }, (_, index) => ({ ...version, storyVersionId: index + 1 }))
+    let failed = false
+    books.listStorybooks.mockClear()
+    books.listStorybooks.mockImplementation(async ({ page, pageSize }) => {
+      if (page === failedPage && !failed) {
+        failed = true
+        throw new Error('offline')
+      }
+      return catalog.slice((page - 1) * pageSize, page * pageSize)
+    })
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    await refreshedActions.bootstrap()
+
+    expect(refreshed.booksError).toContain('offline')
+    expect(refreshed.nextBooksPage).toBe(failedPage)
+    expect(localStorage.getItem(selectionKey)).toBe(savedId)
+    if (manualId) refreshedActions.selectBook(manualId)
+    await refreshedActions.loadMoreBooks()
+
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual(expectedPages)
+    expect(refreshed.booksSource).toBe('api')
+    expect(refreshed.booksError).toBe('')
+    expect(refreshed.selectedBookId).toBe(manualId || savedId)
+    expect(localStorage.getItem(selectionKey)).toBe(manualId || savedId)
+  })
+
+  it('keeps the bookshelf retry available after a direct library refresh', async () => {
+    localStorage.setItem('zhiya.account', 'parent-a')
+    localStorage.setItem('zhiya.selectedBookId', 'version-63')
+    window.history.replaceState({}, '', '/#library')
+    books.listStorybooks.mockClear()
+    books.listStorybooks.mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue([{ ...version, storyVersionId: 63 }])
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    await refreshedActions.bootstrap()
+    await refreshedActions.syncRoute()
+
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1])
+    expect(refreshed.booksError).toContain('offline')
+    expect(refreshed.nextBooksPage).toBe(1)
+
+    await refreshedActions.loadMoreBooks()
+
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1, 1])
+    expect(refreshed.booksError).toBe('')
+    expect(refreshed.selectedBookId).toBe('version-63')
+  })
+
+  it('restores the saved bookshelf selection when navigating from home during the first request', async () => {
+    localStorage.setItem('zhiya.account', 'parent-a')
+    localStorage.setItem('zhiya.selectedBookId', 'version-63')
+    window.history.replaceState({}, '', '/#home')
+    const catalog = Array.from({ length: 63 }, (_, index) => ({ ...version, storyVersionId: index + 1 }))
+    const firstPage = deferred()
+    books.listStorybooks.mockClear()
+    books.listStorybooks.mockImplementation(async ({ page, pageSize }) => {
+      if (page === 1) await firstPage.promise
+      return catalog.slice((page - 1) * pageSize, page * pageSize)
+    })
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    const bootstrapping = refreshedActions.bootstrap()
+    await vi.waitFor(() => expect(books.listStorybooks).toHaveBeenCalledTimes(1))
+
+    refreshedActions.navigate('library')
+    const routing = refreshedActions.syncRoute()
+    expect(refreshed.route.name).toBe('library')
+    firstPage.resolve()
+    await Promise.all([bootstrapping, routing])
+
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1, 2, 3])
+    expect(refreshed.selectedBookId).toBe('version-63')
+  })
+
+  it('loads the reader on cold start while the saved bookshelf selection is still restoring', async () => {
+    localStorage.setItem('zhiya.account', 'parent-a')
+    localStorage.setItem('zhiya.selectedBookId', 'version-63')
+    const catalog = Array.from({ length: 63 }, (_, index) => ({ ...version, storyVersionId: index + 1 }))
+    const secondPage = deferred()
+    books.listStorybooks.mockClear()
+    books.listStorybooks.mockImplementation(async ({ page, pageSize }) => {
+      if (page === 2) await secondPage.promise
+      return catalog.slice((page - 1) * pageSize, page * pageSize)
+    })
+    reading.getReadingSession.mockClear()
+    books.getStoryVersion.mockClear()
+    vi.resetModules()
+    const { zhiya: refreshed, zhiyaActions: refreshedActions } = await import('./useZhiya')
+    const bootstrapping = refreshedActions.bootstrap()
+    await vi.waitFor(() => {
+      expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1, 2])
+      expect(refreshed.currentSession?.readingSessionId).toBe(55)
+      expect(refreshed.currentBook?.storyVersionId).toBe(88)
+    })
+    expect(reading.getReadingSession).toHaveBeenCalledTimes(1)
+    expect(books.getStoryVersion).toHaveBeenCalledWith(88)
+
+    secondPage.resolve()
+    await bootstrapping
+
+    expect(reading.getReadingSession).toHaveBeenCalledTimes(1)
+    expect(books.listStorybooks.mock.calls.map(([request]) => request.page)).toEqual([1, 2, 3])
+    expect(refreshed.selectedBookId).toBe('version-63')
+  })
+
   it.each(['account', 'credential'])('invalidates pending guardian reads on a change of %s', async (change) => {
     await actions.signIn('parent-a', 'password123')
     await actions.loadSessions()
