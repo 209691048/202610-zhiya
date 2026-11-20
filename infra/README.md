@@ -1,5 +1,7 @@
 # G08 后端部署初稿
 
+G15 的两轮本机预演按顺序执行。[HTTPS 部署与重启读回](../docs/testing/g15/local-https/README.md)生成本次镜像、卷和会话基线，[备份恢复与内页图校验](../docs/testing/g15/local-restore/README.md)使用该基线恢复到新卷。
+
 | 缩写 | 中文名称（英文全称） |
 | --- | --- |
 | API | 应用程序编程接口（Application Programming Interface） |
