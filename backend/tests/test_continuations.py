@@ -46,9 +46,22 @@ def cont_env(tmp_path, monkeypatch):
     _login_attempts.clear()
 
 
-@pytest.mark.parametrize("advance_source", [False, True], ids=["switch", "stale-source"])
-def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_path, advance_source):
+def _deny_image_read(monkeypatch, path):
+    read_bytes = Path.read_bytes
+
+    def read(candidate):
+        if candidate == path:
+            raise PermissionError("Image is temporarily locked")
+        return read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+
+
+@pytest.mark.parametrize(("advance_source", "locked"), [(False, False), (True, False), (False, True)],
+                         ids=["switch", "stale-source", "locked-illustration"])
+def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_path, advance_source, locked):
     from PIL import Image
+    from app.services import story_media
 
     client, other, db_path, profile = cont_env
     headers = {"X-CSRF-Token": client.cookies["zhiya_csrf"]}
@@ -66,6 +79,11 @@ def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_
     cover = tmp_path / "first.png"
     Image.new("RGB", (2, 2), "green").save(cover)
     original_image = cover.read_bytes()
+    templates = next(story_media._template_candidates("AGE_4_5", "互助", 4))
+    third_image = tmp_path.joinpath(*story_media._image_path_parts(templates[2][0]))
+    third_image.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (2, 2), "blue").save(third_image)
+    preview_bytes = third_image.read_bytes()
     with closing(sqlite3.connect(db_path)) as db, db:
         db.execute("UPDATE story_pages SET image_ref = 'first.png' WHERE version_id = 301 AND page_no = 1")
     created = client.post("/api/v1/reading-sessions", headers=headers, json={
@@ -83,7 +101,13 @@ def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_
                "characters": ["小兔子"], "scene": "森林", "branching": False, "clientRequestId": "generate-1"}
     assert other.post("/api/v1/story-generations", headers={"X-CSRF-Token": other.cookies["zhiya_csrf"]},
                       json=payload).status_code == 404
-    generated = client.post("/api/v1/story-generations", headers=headers, json=payload)
+    with monkeypatch.context() as files:
+        if locked:
+            fourth_image = tmp_path.joinpath(*story_media._image_path_parts(templates[3][0]))
+            fourth_image.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (2, 2), "orange").save(fourth_image)
+            _deny_image_read(files, fourth_image)
+        generated = client.post("/api/v1/story-generations", headers=headers, json=payload)
     assert generated.status_code == 201, generated.text
     data = generated.json()["data"]
     version = data["storyVersionId"]
@@ -91,6 +115,11 @@ def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_
     assert data["continuation"]["resumePageNumber"] == 3
     assert data["continuation"]["sourceVisitedPageNumbers"] == [1, 2]
     assert data["pages"][0]["imageRef"] == "asset-301-page-1"
+    assert [p["imageRef"] for p in data["pages"][2:]] == [f"asset-{version}-page-3", None]
+    preview_url = f"/api/v1/media/asset-{version}-page-3"
+    Image.new("RGB", (2, 2), "red").save(third_image)
+    assert client.get(preview_url).content == preview_bytes
+    assert other.get(preview_url).status_code == 404
     assert model_contexts[0]["previousPages"] == ["v1第1页", "v1第2页"]
     assert model_contexts[0]["ageBand"] == "AGE_4_5"
     replay = client.post("/api/v1/story-generations", headers=headers, json=payload)
@@ -104,7 +133,9 @@ def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_
     approved = client.post(f"/api/v1/story-versions/{version}/approvals", headers=headers,
                            json={"versionNumber": data["versionNumber"], "reviewedAllBranches": True})
     assert approved.status_code == 200, approved.text
+    assert approved.json()["data"]["pages"][3]["imageRef"] is None
     assert client.get(f"/api/v1/media/asset-{version}-page-1").content == original_image
+    assert client.get(preview_url).content == preview_bytes
     if advance_source:
         assert client.post(f"{path}/events", headers=headers, json={
             "eventType": "PAGE_CHANGED", "pageNumber": 3, "expectedRevision": 2, "clientEventId": "read-3",
@@ -123,6 +154,12 @@ def test_generation_approval_and_continuation_switch(cont_env, monkeypatch, tmp_
         assert switched.status_code == 201, switched.text
         assert switched.json()["data"]["currentPage"] == 3
         assert client.get(path).json()["data"]["session"]["status"] == "FINISHED"
+
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("UPDATE story_versions SET status = 'WITHDRAWN' WHERE id = ?", (version,))
+    revoked = client.post("/api/v1/story-generations", headers=headers, json=payload)
+    assert revoked.status_code == 404 and "data" not in revoked.json()
+    assert len(model_contexts) == 1
 
 
 def test_original_generation_checks_and_persists_only_valid_drafts(cont_env, monkeypatch, tmp_path):
@@ -150,15 +187,20 @@ def test_original_generation_checks_and_persists_only_valid_drafts(cont_env, mon
     with closing(sqlite3.connect(db_path)) as db:
         assert db.execute("SELECT COUNT(*) FROM storybooks").fetchone() == (1,)
         assert db.execute("SELECT COUNT(*) FROM story_versions").fetchone() == (1,)
-    accepted = client.post("/api/v1/story-generations", headers=headers,
-                           json={**payload, "clientRequestId": "valid-story"})
+    valid = {**payload, "clientRequestId": "valid-story"}
+    accepted = client.post("/api/v1/story-generations", headers=headers, json=valid)
     assert accepted.status_code == 201, accepted.text
     data = accepted.json()["data"]
     vid = data["storyVersionId"]
     assert [page["text"] for page in data["pages"]] == texts
     assert [page["imageRef"] for page in data["pages"]] == [f"asset-{vid}-page-{p}" for p in range(1, 6)]
     assert [(branch["fromPageNumber"], branch["nextPageNumber"]) for branch in data["branches"]] == [(2, 3), (2, 4)]
-    assert client.get(f"/api/v1/media/asset-{vid}-page-1").status_code == 404
+    image_url = f"/api/v1/media/asset-{vid}-page-1"
+    preview = client.get(image_url)
+    assert preview.status_code == 200 and preview.headers["content-type"] == "image/png"
+    assert other.get(image_url).status_code == 404
+    assert client.get(f"/api/v1/story-versions/{vid}").status_code == 404
+    assert client.post("/api/v1/story-generations", headers=headers, json=valid).status_code == 200
     with closing(sqlite3.connect(db_path)) as db:
         stored_pages = db.execute(
             "SELECT page_no, image_ref, image_license_note FROM story_pages WHERE version_id = ? ORDER BY page_no",
@@ -166,23 +208,186 @@ def test_original_generation_checks_and_persists_only_valid_drafts(cont_env, mon
         ).fetchall()
         assert len(stored_pages) == 5
         assert all(ref != "none" and note == "NO-COMMERCIAL" for _, ref, note in stored_pages)
+        manifest = db.execute("SELECT approved_page_media_json FROM story_versions WHERE id = ?", (vid,)).fetchone()[0]
+    blobs = db_path.parent / f".{db_path.name}.media_pins" / "blobs"
+    pinned = blobs / json.loads(manifest)["1"]["blob"]
+    approval_url = f"/api/v1/story-versions/{vid}/approvals"
+    approval = {"versionNumber": 1, "reviewedAllBranches": True}
     with monkeypatch.context() as missing_templates:
         missing_templates.setenv("ZHIYA_MEDIA_ROOT", str(tmp_path))
-        unavailable = client.post(f"/api/v1/story-versions/{vid}/approvals", headers=headers,
-                                  json={"versionNumber": 1, "reviewedAllBranches": True})
-        assert unavailable.status_code == 503, unavailable.text
-        assert unavailable.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
-    with closing(sqlite3.connect(db_path)) as db:
-        assert db.execute("SELECT status, approved_page_media_json FROM story_versions WHERE id = ?",
-                          (vid,)).fetchone() == ("PENDING_REVIEW", None)
-    approved = client.post(f"/api/v1/story-versions/{vid}/approvals", headers=headers,
-                           json={"versionNumber": 1, "reviewedAllBranches": True})
-    assert approved.status_code == 200, approved.text
+        offline = pinned.rename(tmp_path / pinned.name)
+        try:
+            unavailable = client.post(approval_url, headers=headers, json=approval)
+            assert unavailable.status_code == 503, unavailable.text
+            assert unavailable.json()["error"]["code"] == "DEPENDENCY_UNAVAILABLE"
+            assert unavailable.json()["error"]["retryable"] is True
+            with closing(sqlite3.connect(db_path)) as db:
+                assert db.execute("SELECT status, approved_page_media_json FROM story_versions WHERE id = ?",
+                                  (vid,)).fetchone() == ("PENDING_REVIEW", manifest)
+        finally:
+            offline.rename(pinned)
+        approved = client.post(approval_url, headers=headers, json=approval)
+        assert approved.status_code == 200, approved.text
+        assert client.get(image_url).content == preview.content
     for page in approved.json()["data"]["pages"]:
         url = f"/api/v1/media/{page['imageRef']}"
         img = client.get(url)
         assert img.status_code == 200 and img.headers["content-type"] == "image/png" and len(img.content) > 0
         assert other.get(url).status_code == 404
+
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("UPDATE story_versions SET status = 'WITHDRAWN' WHERE id = ?", (vid,))
+    revoked = client.post("/api/v1/story-generations", headers=headers, json=valid)
+    assert revoked.status_code == 404 and revoked.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
+    assert "data" not in revoked.json() and client.get(image_url).status_code == 404
+    assert len(contexts) == 2
+
+
+@pytest.mark.parametrize("locked", [False, True], ids=["missing", "locked"])
+def test_legacy_draft_retries_missing_promised_image_before_preview_or_approval(cont_env, monkeypatch, tmp_path, locked):
+    from PIL import Image
+    from app.services import story_media
+
+    client, _, db_path, _ = cont_env
+    headers = {"X-CSRF-Token": client.cookies["zhiya_csrf"]}
+    monkeypatch.setenv("ZHIYA_MEDIA_ROOT", str(tmp_path))
+    paths = []
+    for (ref, _), color in zip(next(story_media._template_candidates("AGE_3_4", "互助", 4)),
+                               ["green", "blue", "orange", "purple"], strict=True):
+        path = tmp_path.joinpath(*story_media._image_path_parts(ref))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (2, 2), color).save(path, format="PNG")
+        paths.append(path)
+
+    class StoryModel:
+        async def generate(self, request):
+            return ModelGenerateResult(success=True, text=json.dumps({
+                "title": "一起散步", "pages": ["小兔出门。", "小兔遇见小熊。", "他们一起散步。", "小兔回家。"],
+                "choices": [],
+            }))
+
+    monkeypatch.setattr(client.app.state, "model_adapter", StoryModel())
+    created = client.post("/api/v1/story-generations", headers=headers, json={
+        "ageBand": "AGE_3_4", "topic": "互助", "characters": ["小兔"], "scene": "森林",
+        "branching": False, "clientRequestId": "legacy-promised-images",
+    })
+    assert created.status_code == 201, created.text
+    draft = created.json()["data"]
+    version = draft["storyVersionId"]
+    urls = [f"/api/v1/media/{page['imageRef']}" for page in draft["pages"]]
+    # The merged API stored the generation response before it supported draft image snapshots.
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("UPDATE story_versions SET approved_page_media_json = NULL WHERE id = ?", (version,))
+    unavailable_file = paths[-1]
+    saved_image = unavailable_file.read_bytes()
+    approval_url = f"/api/v1/story-versions/{version}/approvals"
+    approval = {"versionNumber": 1, "reviewedAllBranches": True}
+    first_png = paths[0].read_bytes()
+    with monkeypatch.context() as files:
+        if locked:
+            _deny_image_read(files, unavailable_file)
+        else:
+            unavailable_file.unlink()
+        assert client.get(urls[0]).content == first_png
+        for response in (client.get(urls[-1]), client.post(approval_url, json=approval, headers=headers)):
+            assert response.status_code == 503
+            assert response.json()["error"]["retryable"] is True
+    with closing(sqlite3.connect(db_path)) as db:
+        assert db.execute("SELECT status FROM story_versions WHERE id = ?", (version,)).fetchone() == ("PENDING_REVIEW",)
+
+    unavailable_file.write_bytes(saved_image)
+    Image.new("RGB", (2, 2), "red").save(paths[0], format="PNG")
+    assert client.get(urls[-1]).content == saved_image
+    assert client.post(approval_url, json=approval, headers=headers).status_code == 200
+    assert client.get(urls[0]).content == first_png
+    assert client.get(urls[-1]).content == saved_image
+
+
+@pytest.mark.parametrize(("band", "topic"), [("AGE_3_4", "时间认知"), ("AGE_4_5", "互助"), ("AGE_4_5", "合作")])
+def test_template_selection_prefers_topic_within_requested_age_band(band, topic):
+    from app.services import story_media
+
+    low, high = story_media.AGE_BAND_BOUNDS[band]
+    eligible = [entry for entry in story_media._template_catalog()
+                if entry["age_min"] <= low and entry["age_max"] >= high and len(entry["assets"]) >= 4]
+    matching = [entry for entry in eligible if topic in entry["topics"]]
+    selected = story_media.select_template_illustrations(band, topic, 4)
+    assert selected in [entry["assets"][:4] for entry in matching or eligible]
+
+
+@pytest.mark.parametrize(("licensed_count", "custom_root"), [(5, True), (2, True), (0, True), (5, False)],
+                         ids=["custom-complete", "custom-partial", "custom-empty", "default-complete"])
+def test_continuation_uses_readable_licensed_template_for_new_pages(cont_env, monkeypatch, tmp_path,
+                                                                   licensed_count, custom_root):
+    from unittest.mock import AsyncMock
+    from PIL import Image
+    from app.services import story_media
+
+    client, _, db_path, profile = cont_env
+    headers = {"X-CSRF-Token": client.cookies["zhiya_csrf"]}
+    if custom_root:
+        monkeypatch.setenv("ZHIYA_MEDIA_ROOT", str(tmp_path))
+    else:
+        monkeypatch.delenv("ZHIYA_MEDIA_ROOT", raising=False)
+        monkeypatch.setattr(story_media, "DEFAULT_MEDIA_ROOT", tmp_path)
+    versions, catalog_pages = [], []
+    # The on-topic template has one readable page in the partial case and none in the complete cases.
+    for version_id, low, high, licensed, topic in [(1, 4, 5, licensed_count, "观察"), (2, 5, 6, 6, "互助"),
+                                                   (3, 4, 5, 5 if licensed_count else 0, "互助")]:
+        versions.append({"id": version_id, "age_min": low, "age_max": high, "topics_json": [topic],
+                         "source_ref": story_media.SEED_COVER_SOURCE_REF})
+        for n in range(1, 7):
+            ref = f"{version_id}-{n}.png"
+            if version_id != 3 or (licensed_count == 2 and n == 2):
+                Image.new("RGB", (2, 2), (version_id, n, 0)).save(tmp_path / ref)
+            elif n == 1:
+                (tmp_path / ref).write_bytes(b"incomplete PNG")
+            catalog_pages.append({"version_id": version_id, "page_no": n, "image_ref": ref,
+                                  "image_license_note": story_media.TEMPLATE_PAGE_LICENSE if n <= licensed else None})
+    for name, data in [("DEFAULT_TEMPLATE_VERSIONS", versions), ("DEFAULT_TEMPLATE_PAGES", catalog_pages)]:
+        catalog = tmp_path / f"{name}.json"
+        catalog.write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setattr(story_media, name, catalog)
+
+    model = AsyncMock()
+    model.generate.return_value = ModelGenerateResult(success=True, text=json.dumps({
+        "title": "一起散步", "pages": ["来到岔路口。", "走过树林。", "一起回家。"], "choices": ["走进树林", "去找朋友"],
+    }))
+    monkeypatch.setattr(client.app.state, "model_adapter", model)
+    session = client.post("/api/v1/reading-sessions", headers=headers, json={
+        "childProfileId": profile, "storyVersionId": 301, "mode": "PARENT_CHILD",
+    }).json()["data"]["readingSessionId"]
+    for n, event in enumerate(("STARTED", "PAGE_CHANGED", "PAGE_CHANGED"), start=1):
+        advanced = client.post(f"/api/v1/reading-sessions/{session}/events", headers=headers, json={
+            "eventType": event, "pageNumber": n, "expectedRevision": n - 1, "clientEventId": f"read-{n}",
+        })
+        assert advanced.status_code == 201
+    request = {"sourceReadingSessionId": session, "expectedRevision": 3, "topic": "互助",
+               "characters": ["小兔"], "scene": "树林", "branching": True, "clientRequestId": "short-templates"}
+    created = client.post("/api/v1/story-generations", headers=headers, json=request)
+    assert created.status_code == 201, created.text
+    draft = created.json()["data"]
+    assert [p["text"] for p in draft["pages"][:3]] == [f"v1第{n}页" for n in (1, 2, 3)]
+    with closing(sqlite3.connect(db_path)) as db:
+        new_rows = db.execute("SELECT image_ref, image_license_note FROM story_pages "
+                              "WHERE version_id = ? AND page_no > 3 ORDER BY page_no",
+                              (draft["storyVersionId"],)).fetchall()
+    available = min(licensed_count, 3)
+    assert len(new_rows) == 3
+    assert len({ref for ref, _ in new_rows[:available]}) == available
+    licensed_refs = {f"1-{n}.png" for n in range(1, licensed_count + 1)}
+    for page, (ref, note) in zip(draft["pages"][3:3 + available], new_rows[:available], strict=True):
+        assert ref in licensed_refs and note == story_media.TEMPLATE_PAGE_LICENSE
+        assert client.get(f"/api/v1/media/{page['imageRef']}").content == (tmp_path / ref).read_bytes()
+    assert new_rows[available:] == [("none", None)] * (3 - available)
+    assert all(p["imageRef"] is None for p in draft["pages"][3 + available:])
+    assert client.post("/api/v1/story-generations", headers=headers, json=request).json()["data"] == draft
+    model.generate.assert_awaited_once()
+    approved = client.post(f"/api/v1/story-versions/{draft['storyVersionId']}/approvals", headers=headers,
+                           json={"versionNumber": draft["versionNumber"], "reviewedAllBranches": True})
+    assert approved.status_code == 200, approved.text
+    approved_refs = [page["imageRef"] for page in approved.json()["data"]["pages"][3:]]
+    assert approved_refs == [page["imageRef"] for page in draft["pages"][3:]]
 
 
 def test_story_generation_validation_limits_and_mode_guards(cont_env, monkeypatch):
@@ -294,20 +499,20 @@ def test_story_generation_validation_limits_and_mode_guards(cont_env, monkeypatc
     assert limit_linear.status_code == 422 and limit_linear.json()["error"]["code"] == "CONTINUATION_LIMIT"
     assert len(calls) == 1
 
-    # Child-mode device cannot call API-025 (403 FORBIDDEN).
+    # The same family's child device cannot preview the guardian's pending draft.
+    preview_url = f"/api/v1/media/{ok_branch.json()['data']['pages'][-1]['imageRef']}"
+    assert client.get(preview_url).status_code == 200
     with TestClient(app, base_url="https://testserver") as child_client:
-        creds = {"account": "guardian-child-check", "password": "strong-pass-123"}
-        assert child_client.post("/api/v1/auth/registrations", json=creds).status_code == 201
+        creds = {"account": "guardian-one", "password": "strong-pass-123"}
         assert child_client.post("/api/v1/auth/sessions", json=creds).status_code == 201
         ch = {"X-CSRF-Token": child_client.cookies["zhiya_csrf"]}
-        cpid = child_client.post("/api/v1/child-profiles", headers=ch,
-                                 json={"ageBand": "AGE_4_5", "preferredMinutes": 10}).json()["data"]["childProfileId"]
         csid = child_client.post("/api/v1/reading-sessions", headers=ch, json={
-            "childProfileId": cpid, "storyVersionId": 399, "mode": "PARENT_CHILD",
+            "childProfileId": profile, "storyVersionId": 399, "mode": "PARENT_CHILD",
         }).json()["data"]["readingSessionId"]
         assert child_client.put(f"/api/v1/reading-sessions/{csid}/mode-settings", headers=ch, json={
             "mode": "CHILD_SOLO", "allowedStoryVersionIds": [399], "timeLimitSeconds": 300,
         }).status_code == 200
+        assert child_client.get(preview_url).status_code == 404
         child_csrf = {"X-CSRF-Token": child_client.cookies["zhiya_csrf"]}
         forbidden = child_client.post("/api/v1/story-generations", headers=child_csrf, json={
             "ageBand": "AGE_4_5", "topic": "互助", "characters": ["小兔"], "scene": "森林",
@@ -602,6 +807,60 @@ def test_original_generation_rejects_invalid_catalog_before_model_call(cont_env,
     with closing(sqlite3.connect(db_path)) as db:
         assert not db.execute("SELECT 1 FROM request_executions WHERE client_request_id = 'restricted-template'").fetchone()
         assert db.execute("SELECT COUNT(*) FROM story_versions").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("failure", ["original-pin-store", "continuation-templates"])
+def test_required_new_images_recover_with_same_generation_key(cont_env, monkeypatch, tmp_path, failure):
+    from unittest.mock import AsyncMock
+    from app.services import story_media
+
+    client, _, db_path, profile = cont_env
+    headers = {"X-CSRF-Token": client.cookies["zhiya_csrf"]}
+    payload = {"topic": "互助", "characters": ["小兔"], "scene": "森林", "branching": False,
+               "clientRequestId": "recover-new-images"}
+    monkeypatch.delenv("ZHIYA_MEDIA_ROOT", raising=False)
+    if failure == "continuation-templates":
+        session = client.post("/api/v1/reading-sessions", headers=headers, json={
+            "childProfileId": profile, "storyVersionId": 301, "mode": "PARENT_CHILD",
+        }).json()["data"]["readingSessionId"]
+        assert client.post(f"/api/v1/reading-sessions/{session}/events", headers=headers, json={
+            "eventType": "STARTED", "pageNumber": 1, "expectedRevision": 0, "clientEventId": "read-1",
+        }).status_code == 201
+        payload.update(sourceReadingSessionId=session, expectedRevision=1)
+    else:
+        payload["ageBand"] = "AGE_4_5"
+
+    async def generate(request):
+        # The source templates go offline during generation. The draft must reuse its pinned images.
+        monkeypatch.setattr(story_media, "DEFAULT_MEDIA_ROOT", tmp_path)
+        count = json.loads(request.context_text)["newPageCount"]
+        return ModelGenerateResult(success=True, text=json.dumps({"title": "森林", "pages": ["小兔向前走。"] * count}))
+
+    model = AsyncMock()
+    model.generate.side_effect = generate
+    monkeypatch.setattr(client.app.state, "model_adapter", model)
+    url = "/api/v1/story-generations"
+    with monkeypatch.context() as offline:
+        if failure == "continuation-templates":
+            offline.setattr(story_media, "DEFAULT_MEDIA_ROOT", tmp_path)
+        else:
+            blobs = db_path.parent / f".{db_path.name}.media_pins" / "blobs"
+            blobs.parent.mkdir(exist_ok=True)
+            blobs.touch()
+        unavailable = client.post(url, headers=headers, json=payload)
+        assert unavailable.status_code == 503
+        assert unavailable.json()["error"]["retryable"] is True
+        model.generate.assert_not_awaited()
+    if failure == "original-pin-store":
+        blobs.unlink()
+
+    recovered = client.post(url, headers=headers, json=payload)
+    assert recovered.status_code == 201, recovered.text
+    data = recovered.json()["data"]
+    assert client.get(f"/api/v1/media/{data['pages'][-1]['imageRef']}").status_code == 200
+    replay = client.post(url, headers=headers, json=payload)
+    assert replay.status_code == 200 and replay.json()["data"] == data
+    model.generate.assert_awaited_once()
 
 
 def test_continuation_preflight_carried_blob_missing_and_save_retry_once(cont_env, monkeypatch, tmp_path):
@@ -1222,6 +1481,14 @@ def test_approval_enforces_backend_safety_freezes_media_and_handles_dependency_r
     with closing(sqlite3.connect(db_path)) as db, db:
         db.execute("UPDATE story_branches SET choice_label = '去森林' WHERE id = 901")
 
+    # A pending draft from an existing database binds its preview on the owner's first read.
+    preview_url = "/api/v1/media/asset-307-page-3"
+    assert second.get(preview_url).status_code == 404
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reads = [pool.submit(first.get, preview_url) for _ in range(2)]
+        assert [read.result().content for read in reads] == [green_png, green_png]
+    (media_root / "resume.png").write_bytes(red_png)
+
     # Missing media root during API-026 returns retryable 503 and rolls back status/retirement.
     offline_root = tmp_path / "media-offline"
     media_root.rename(offline_root)
@@ -1239,8 +1506,7 @@ def test_approval_enforces_backend_safety_freezes_media_and_handles_dependency_r
     p3 = next(p for p in approved.json()["data"]["pages"] if p["pageNumber"] == 3)
     assert p3["imageRef"] == "asset-307-page-3"
 
-    # Mutate source image file after approval: pinned snapshot keeps original green PNG bytes.
-    (media_root / "resume.png").write_bytes(red_png)
+    # Approval uses the previously reviewed green image after the template was replaced.
     assert first.get("/api/v1/media/asset-307-page-3").content == green_png
     assert second.get("/api/v1/media/asset-307-page-3").status_code == 404
 

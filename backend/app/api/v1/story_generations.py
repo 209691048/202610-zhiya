@@ -19,13 +19,13 @@ from app.api.v1.storybooks import AGES, AgeBand, _verify_version_for_approval
 from app.schemas.agent import ModelGenerateRequest
 from app.services.reading_agent import SENSITIVE
 from app.services.story_media import (
+    TEMPLATE_PAGE_LICENSE,
     TEMPLATE_VERSION_LICENSE_NOTE,
     MediaDependencyError,
+    ensure_generation_illustrations_readable,
     ensure_version_pages_media,
     page_image_ref_from_manifest,
-    resolve_optional_template_illustrations,
-    select_template_illustrations,
-    verify_template_illustrations,
+    pin_generation_illustrations,
 )
 
 
@@ -149,8 +149,8 @@ def reserve_generation(request, payload, digest):
         if source is not None:
             source_version = db.execute("SELECT * FROM story_versions WHERE id = ?", (source["version_id"],)).fetchone()
             ensure_version_pages_media(db, source_version, prefix)
-        else:
-            verify_template_illustrations(select_template_illustrations(payload.ageBand, payload.topic, total))
+        age_band = source["age_band"] if source is not None else payload.ageBand
+        new_images = pin_generation_illustrations(age_band, payload.topic, total - len(prefix), len(prefix))
         token = str(uuid4())
         now = int(time.time() * 1000)
         db.execute(
@@ -160,7 +160,7 @@ def reserve_generation(request, payload, digest):
                VALUES (?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)""",
             (owner, SCOPE, owner, payload.clientRequestId, digest, token, now, now + 65_000, source_id),
         )
-        return owner, token, source, carried_pages, total, decision
+        return owner, token, new_images, source, carried_pages, total, decision
 
 
 async def generate_text(request, payload, source, carried_pages, total, decision):
@@ -203,7 +203,7 @@ async def generate_text(request, payload, source, carried_pages, total, decision
     return draft
 
 
-def save_draft(db, request, payload, owner, source, carried_pages, total, decision, draft, now):
+def save_draft(db, request, payload, owner, source, carried_pages, total, decision, draft, new_images, now):
     if source is None:
         book_id = db.execute(
             "INSERT INTO storybooks (owner_guardian_id, source_type, created_at) VALUES (?, 'ORIGINAL', ?)",
@@ -214,8 +214,8 @@ def save_draft(db, request, payload, owner, source, carried_pages, total, decisi
         snapshot = (None,) * 6
         continuation = {}
         source_manifest = None
+        carried_images = []
         license_note = TEMPLATE_VERSION_LICENSE_NOTE
-        new_assets = verify_template_illustrations(select_template_illustrations(age_band, payload.topic, total))
     else:
         book_id = source["storybook_id"]
         number = db.execute(
@@ -233,16 +233,18 @@ def save_draft(db, request, payload, owner, source, carried_pages, total, decisi
         }}
         source_version = db.execute("SELECT * FROM story_versions WHERE id = ?", (source["version_id"],)).fetchone()
         source_manifest = ensure_version_pages_media(db, source_version, prefix)
+        carried_images = [source_manifest["pages"].get(str(page)) for page in prefix]
         license_note = source["license_note"]
-        new_assets = resolve_optional_template_illustrations(age_band, payload.topic, total, len(carried_pages))
+    ensure_generation_illustrations_readable(new_images)
+    page_media = dict(enumerate(carried_images + new_images, start=1))
     version_id = db.execute(
         """INSERT INTO story_versions
            (storybook_id, version_no, title, topics_json, age_min, age_max, license_note, status, created_at,
             branching, source_version_id, source_session_id, source_revision, source_page_no, resume_page_no,
-            source_visited_pages_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            source_visited_pages_json, approved_page_media_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (book_id, number, draft.title, json.dumps([payload.topic], ensure_ascii=False), *AGES[age_band], license_note,
-         now, int(payload.branching), *snapshot),
+         now, int(payload.branching), *snapshot, json.dumps(page_media, ensure_ascii=False)),
     ).lastrowid
     pages = []
     texts = [page["body_text"] for page in carried_pages] + draft.pages
@@ -254,8 +256,9 @@ def save_draft(db, request, payload, owner, source, carried_pages, total, decisi
             image_license_note = carried["image_license_note"]
             image = page_image_ref_from_manifest(source["version_id"], carried["page_no"], source_manifest)
         else:
-            image_ref, image_license_note = new_assets[page_no - len(carried_pages) - 1]
-            image = None if image_ref == "none" else f"asset-{version_id}-page-{page_no}"
+            asset = page_media[page_no]
+            image_ref, image_license_note = (asset["rawRef"], TEMPLATE_PAGE_LICENSE) if asset else ("none", None)
+            image = f"asset-{version_id}-page-{page_no}" if asset else None
         db.execute(
             """INSERT INTO story_pages (version_id, page_no, body_text, image_ref, image_license_note,
                                       default_next_page_number) VALUES (?, ?, ?, ?, ?, ?)""",
@@ -285,7 +288,7 @@ def save_draft(db, request, payload, owner, source, carried_pages, total, decisi
 
 def finish_generation(request, payload, digest, reserved, result, execution_status, *,
                       record_media_failure: bool = False):
-    owner, token, source, carried_pages, total, decision = reserved
+    owner, token, new_images, source, carried_pages, total, decision = reserved
     with authorized_db(request, write=True, guardian_only=True) as (db, principal, failure):
         if failure:
             return failure
@@ -326,7 +329,8 @@ def finish_generation(request, payload, digest, reserved, result, execution_stat
         if saving_draft:
             db.execute("SAVEPOINT draft")
             try:
-                result = save_draft(db, request, payload, owner, source, carried_pages, total, decision, result, now)
+                result = save_draft(db, request, payload, owner, source, carried_pages, total, decision,
+                                    result, new_images, now)
             except MediaDependencyError:
                 if not record_media_failure:
                     raise
@@ -361,7 +365,7 @@ async def generate_story(payload: StoryGeneration, request: Request):
         return reserved
     status = "SUCCEEDED"
     try:
-        result = await generate_text(request, payload, *reserved[2:])
+        result = await generate_text(request, payload, *reserved[3:])
     except TimeoutError:
         status = "UNKNOWN"
         result = error(request, 504, "REQUEST_OUTCOME_UNKNOWN", "生成结果未知")
