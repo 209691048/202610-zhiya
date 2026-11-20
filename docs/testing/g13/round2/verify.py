@@ -50,7 +50,7 @@ def seed_fixture(path):
 
 
 @contextmanager
-def local_app(directory):
+def local_app(directory, *, application=None, static_directory=None):
     # Trust only this disposable loopback key in this browser process.
     cert, key = directory / "cert.pem", directory / "key.pem"
     subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -58,16 +58,20 @@ def local_app(directory):
                     "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
     public_key = subprocess.check_output(["openssl", "pkey", "-in", str(key), "-pubout", "-outform", "DER"])
     pin = base64.b64encode(hashlib.sha256(public_key).digest()).decode("ascii")
-    app = create_app(Settings(model_api_url="https://fixture.invalid/model", model_api_key="fixture"),
-                     SpeechSettings())
-    app.mount("/", StaticFiles(directory=ROOT / "frontend" / "dist", html=True))
+    app = application if application is not None else create_app(
+        Settings(model_api_url="https://fixture.invalid/model", model_api_key="fixture"), SpeechSettings())
+    app.mount("/", StaticFiles(directory=static_directory or ROOT / "frontend" / "dist", html=True))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         server = uvicorn.Server(uvicorn.Config(app, ssl_certfile=str(cert), ssl_keyfile=str(key),
                                                timeout_keep_alive=1, timeout_graceful_shutdown=8,
                                                access_log=False, log_level="warning"))
+        loop_factory = asyncio.SelectorEventLoop
+        if application is not None and sys.platform == "win32":
+            # Live ASR needs a subprocess-capable loop for FFmpeg.
+            loop_factory = asyncio.ProactorEventLoop
         thread = Thread(target=asyncio.run, args=(server.serve(sockets=[sock]),),
-                        kwargs={"loop_factory": asyncio.SelectorEventLoop}, daemon=True)
+                        kwargs={"loop_factory": loop_factory}, daemon=True)
         thread.start()
         deadline = time.monotonic() + 20
         try:

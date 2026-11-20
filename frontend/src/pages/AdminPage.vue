@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
+import { mediaUrl } from '../api/client'
 
 const props = defineProps({
   section: { type: String, default: 'storybooks' },
@@ -12,6 +13,7 @@ const props = defineProps({
 
 const emit = defineEmits(['navigate', 'sign-out'])
 const storyForm = reactive({
+  storybookId: null,
   title: '',
   ageBand: 'AGE_4_5',
   topics: '',
@@ -40,6 +42,7 @@ const sectionLoading = computed(() => props.section === 'knowledge' ? props.admi
 const currentItems = computed(() => props.section === 'knowledge'
   ? props.admin.knowledgeItems
   : props.admin.storyVersions)
+const libraryBooks = computed(() => [...new Map(props.admin.storyVersions.map(story => [story.storybookId, story.title]))])
 
 function splitList(value) {
   return [...new Set(String(value).split(/[,，\n]/).map((item) => item.trim()).filter(Boolean))]
@@ -58,6 +61,7 @@ async function createStory() {
     return
   }
   const payload = {
+    ...(storyForm.storybookId ? { storybookId: storyForm.storybookId } : {}),
     title: storyForm.title.trim(),
     ageBand: storyForm.ageBand,
     topics: splitList(storyForm.topics),
@@ -75,7 +79,7 @@ async function createStory() {
     return
   }
   if (await props.createStoryAction(payload)) {
-    Object.assign(storyForm, { title: '', topics: '', licenseNote: '', pagesText: '', imageRefs: '' })
+    Object.assign(storyForm, { storybookId: null, title: '', topics: '', licenseNote: '', pagesText: '', imageRefs: '' })
   }
 }
 
@@ -148,6 +152,10 @@ async function saveRevision() {
         <details class="admin-create-panel">
           <summary class="primary">＋ 新建绘本草稿</summary>
           <form class="admin-form" @submit.prevent="createStory">
+            <label class="form-field"><span>所属绘本</span><select v-model="storyForm.storybookId">
+              <option :value="null">新建绘本</option>
+              <option v-for="[id, title] in libraryBooks" :key="id" :value="id">{{ title }}（新增版本）</option>
+            </select></label>
             <label class="form-field"><span>标题</span><input v-model="storyForm.title" maxlength="120" placeholder="例如：纸船停在哪里"></label>
             <label class="form-field"><span>适龄</span>
               <select v-model="storyForm.ageBand">
@@ -159,7 +167,7 @@ async function saveRevision() {
             <label class="form-field"><span>主题标签</span><input v-model="storyForm.topics" placeholder="互助，自然观察"></label>
             <label class="form-field"><span>许可依据</span><input v-model="storyForm.licenseNote" maxlength="500" placeholder="自制或明确授权依据"></label>
             <label class="form-field admin-wide"><span>页面正文</span><textarea v-model="storyForm.pagesText" rows="7" placeholder="每行一页正文。默认下一页按顺序连接。"></textarea></label>
-            <label class="form-field admin-wide"><span>图片资源键</span><textarea v-model="storyForm.imageRefs" rows="3" placeholder="每行对应一页；留空表示该页无配图。"></textarea></label>
+            <label class="form-field admin-wide"><span>已授权的内页图</span><textarea v-model="storyForm.imageRefs" rows="3" placeholder="每行填写素材库内的相对图片路径。草稿可留空，发布前每页都须有图。"></textarea></label>
             <button class="primary" type="submit" :disabled="sectionLoading || admin.busy">{{ admin.busy ? '正在创建…' : '创建草稿' }}</button>
           </form>
         </details>
@@ -176,11 +184,14 @@ async function saveRevision() {
           <p v-if="story.validationErrors?.length" class="admin-warning">{{ story.validationErrors.join('；') }}</p>
           <div class="admin-card-actions">
             <button v-if="story.status === 'DRAFT'" class="primary" type="button" :disabled="sectionLoading || admin.busy || story.canPublish === false" @click="setStoryStatusAction(story.storyVersionId, 'PUBLISHED')">审核并发布</button>
-            <button v-if="story.status === 'PUBLISHED'" class="danger" type="button" :disabled="sectionLoading || admin.busy" @click="setStoryStatusAction(story.storyVersionId, 'WITHDRAWN')">撤回</button>
+            <button v-if="['PUBLISHED', 'RETIRED'].includes(story.status)" class="danger" type="button" :disabled="sectionLoading || admin.busy" @click="setStoryStatusAction(story.storyVersionId, 'WITHDRAWN')">撤回</button>
             <details>
               <summary class="secondary">查看页面</summary>
               <ol class="admin-pages">
-                <li v-for="page in story.pages" :key="page.pageNumber"><strong>第 {{ page.pageNumber }} 页</strong><p>{{ page.text }}</p></li>
+                <li v-for="page in story.pages" :key="page.pageNumber">
+                  <strong>第 {{ page.pageNumber }} 页</strong><p>{{ page.text }}</p>
+                  <img v-if="page.imageRef" :src="mediaUrl(page.imageRef)" loading="lazy" width="200" :alt="`第 ${page.pageNumber} 页配图`">
+                </li>
               </ol>
               <ul v-if="story.branches?.length"><li v-for="branch in story.branches" :key="branch.branchId">第 {{ branch.fromPageNumber }} 页 → 第 {{ branch.nextPageNumber }} 页：{{ branch.choiceLabel }}（{{ branch.reviewStatus }}）</li></ul>
             </details>

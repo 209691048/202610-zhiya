@@ -13,6 +13,7 @@ import { createProfile, deleteProfile, listProfiles, updateProfile } from '../ap
 import { getStoryVersion, listStorybooks, recommendStorybooks } from '../api/storybooks'
 import {
   addReadingEvent,
+  askReadingQuestion,
   chooseReadingBranch,
   completeReadingSession,
   createReadingSession,
@@ -1761,6 +1762,9 @@ function appendReadingInteraction(operation, result) {
       feedback: initial ? null : operation.payload.feedback,
     }
     session.revision = result.revision
+  } else if (operation.kind === 'ask') {
+    event = { ...result, eventType: 'ASK', pageNumber: operation.payload.pageNumber }
+    session.revision = result.revision
   } else if (operation.kind === 'answer') {
     event = {
       interactionEventId: result.interactionEventId,
@@ -1787,6 +1791,7 @@ function appendReadingInteraction(operation, result) {
 function readingRequest(operation) {
   if (operation.kind === 'finish') return completeReadingSession(operation.sessionId, operation.payload)
   if (operation.kind === 'guidance') return requestReadingGuidance(operation.sessionId, operation.payload)
+  if (operation.kind === 'ask') return askReadingQuestion(operation.sessionId, operation.payload)
   if (operation.kind === 'branch') return chooseReadingBranch(operation.sessionId, operation.payload)
   return addReadingEvent(operation.sessionId, operation.payload)
 }
@@ -1829,6 +1834,9 @@ async function writeReading(operation) {
         : feedback === 'SKIPPED'
           ? '已跳过本页提问'
           : '已根据理解程度换一个引导问题')
+    } else if (operation.kind === 'ask') {
+      appendReadingInteraction(operation, result)
+      setToast('已保存本页问答')
     } else if (operation.kind === 'answer') {
       appendReadingInteraction(operation, result)
       setToast('孩子的回答已保存')
@@ -1962,7 +1970,7 @@ async function requestGuidance(feedback = 'INITIAL') {
   })
 }
 
-async function submitAnswer(inputText) {
+async function submitReadingText(inputText, kind) {
   const session = state.currentSession
   const text = typeof inputText === 'string' ? inputText.trim() : ''
   if (!session || session.preview || session.status !== 'IN_PROGRESS'
@@ -1972,13 +1980,13 @@ async function submitAnswer(inputText) {
   }
   return writeReading({
     sessionId: session.readingSessionId,
-    kind: 'answer',
+    kind,
     payload: {
-      eventType: 'ANSWER',
+      ...(kind === 'answer' ? { eventType: 'ANSWER' } : {}),
       pageNumber: session.currentPage,
       inputText: text,
       expectedRevision: session.revision,
-      clientEventId: createClientEventId('answer'),
+      clientEventId: createClientEventId(kind),
     },
   })
 }
@@ -2180,7 +2188,8 @@ export const zhiyaActions = {
   loadReaderRoute,
   recordPageChange,
   requestGuidance,
-  submitAnswer,
+  submitAnswer: text => submitReadingText(text, 'answer'),
+  askQuestion: text => submitReadingText(text, 'ask'),
   chooseBranch,
   completeReading,
   removeReadingSession,

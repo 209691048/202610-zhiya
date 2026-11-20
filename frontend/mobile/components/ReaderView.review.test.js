@@ -69,6 +69,58 @@ async function clickButton(label) {
 }
 
 describe('ReaderView session recovery and interaction', () => {
+  it('restores a retried ASK only in the story answer card', async () => {
+    const snapshot = { ...inProgress, mode: 'CHILD_SOLO' }
+    const reply = { interactionEventId: 12, revision: 2, status: 'GENERATED',
+      strategyType: 'CONCRETE_RECALL', outputText: '小狐狸举着伞。' }
+    const submitQuestion = vi.fn()
+      .mockRejectedValueOnce(new ApiError('offline', { code: 'REQUEST_OUTCOME_UNKNOWN' }))
+      .mockResolvedValueOnce({ data: reply })
+    await openReader({ snapshot, sessionApi: { submitQuestion,
+      get: vi.fn().mockResolvedValue({ data: { session: snapshot, events: [], report: null } }) } })
+    await clickButton('故事里有谁？')
+    await clickButton('重新核对进度')
+    expect(submitQuestion.mock.calls[1][1]).toEqual(submitQuestion.mock.calls[0][1])
+    expect(wrapper.text()).toContain(reply.outputText)
+    expect(wrapper.getComponent({ name: 'InteractionCard' }).props('questionReady')).toBe(false)
+  })
+
+  it('offers child questions without free text and plays the returned story answer', async () => {
+    vi.stubGlobal('Audio', class extends EventTarget {
+      play = vi.fn().mockResolvedValue(undefined)
+      pause() {}
+      load() {}
+      removeAttribute() {}
+    })
+    const result = { interactionEventId: 121, revision: 2, outputText: '小狐狸举着伞。', status: 'GENERATED', strategyType: 'CONCRETE_RECALL' }
+    const voice = { synthesizeInteraction: vi.fn().mockResolvedValue({ data: { audioUrl: '/story-audio', expiresAt: '2099-01-01' } }) }
+    const api = await openReader({ snapshot: { ...inProgress, mode: 'CHILD_SOLO' },
+      sessionApi: { submitQuestion: vi.fn().mockResolvedValueOnce({ data: result }) }, voiceApi: voice })
+    expect(wrapper.text()).not.toContain('提出本页问题')
+    await clickButton('故事里有谁？')
+    expect(api.submitQuestion).toHaveBeenCalledWith(42, expect.objectContaining({
+      inputText: '故事里有谁？', expectedRevision: 1, pageNumber: 1,
+    }), expect.any(Object))
+    expect(api.addEvent).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain(result.outputText)
+    await clickButton('播放故事回答')
+    expect(voice.synthesizeInteraction).toHaveBeenCalledWith({ interactionEventId: 121, signal: expect.any(AbortSignal) })
+  })
+
+  it('submits a confirmed mobile question without first answering a generated prompt', async () => {
+    const api = await openReader({ sessionApi: { submitQuestion: vi.fn().mockResolvedValueOnce({ data: {
+      interactionEventId: 15, revision: 2, outputText: '一起看看书页吧。', status: 'FALLBACK', strategyType: 'NO_KNOWLEDGE_FALLBACK',
+    } }) } })
+    await clickButton('提出本页问题')
+    await clickButton('改用文字输入')
+    await wrapper.get('textarea').setValue('它在做什么？')
+    expect(api.submitQuestion).not.toHaveBeenCalled()
+    await clickButton('确认提问')
+    expect(api.submitQuestion).toHaveBeenCalledWith(42, expect.objectContaining({ inputText: '它在做什么？' }), expect.any(Object))
+    expect(api.submitGuidance).not.toHaveBeenCalled()
+    expect(api.addEvent).not.toHaveBeenCalled()
+  })
+
   it('directs an unknown create outcome to growth records without a retry button', async () => {
     const api = await openReader({
       snapshot: null,
