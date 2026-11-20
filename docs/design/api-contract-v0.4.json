@@ -5,6 +5,18 @@
   "note": "所有示例为格式数据，不是真实模型输出、凭证或测试结果。",
   "common": {
     "authentication": "会话 Cookie zhiya_session 使用 Secure、HttpOnly 和 SameSite=Lax。受保护的写请求须在 X-CSRF-Token 中提交可读 Cookie zhiya_csrf 的值。进入儿童模式时，在同一事务内吊销当前设备的家长 auth_sessions、签发 child_grants 及版本范围并绑定会话。恢复家长权限时重新验证账号密码，撤销儿童授权并签发全新家长凭证。",
+    "adminStoryVersionList": {
+      "method": "GET",
+      "path": "/api/v1/admin/story-versions",
+      "description": "仅内容管理员可分页读取 LIBRARY 各状态版本。page 从1开始，pageSize 为1至50。每项包含 storybookId、storyVersionId、versionNumber、title、status、topics、licenseNote、正文页及全部分支的标签、目标和审核状态。发布资格由 API-028 在服务端复核。",
+      "responseExample": {"data": {"items": [], "page": 1, "pageSize": 20}, "requestId": "req-demo"}
+    },
+    "currentSessionIdentity": {
+      "method": "GET",
+      "path": "/api/v1/auth/sessions/current",
+      "description": "使用当前设备的会话 Cookie 查询身份。家长和管理员返回 accountId、role；儿童凭证只返回 role=CHILD 以恢复交接页（含已到时但尚可解锁的凭证）。无有效身份返回401。响应禁止缓存。",
+      "responseExample": {"data": {"accountId": 1, "role": "ADMIN"}, "requestId": "req-demo"}
+    },
     "ownership": "私有资源每次执行归属校验；非本人统一404。",
     "pagination": {
       "defaultPageSize": 20,
@@ -1088,7 +1100,7 @@
     {
       "method": "DELETE",
       "path": "/api/v1/auth/sessions/current",
-      "permission": "家长或当前受限儿童",
+      "permission": "家长、当前受限儿童或内容管理员",
       "ownerRole": "业务后端",
       "requestContentType": null,
       "queryExample": null,

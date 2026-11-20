@@ -6,13 +6,17 @@
 
 儿童设备的 Cookie 保留 24 小时。业务访问到 `expiresAt` 截止。持有未吊销儿童凭证的设备使用 API-021 验证所属家长密码，业务时限届满后仍可解锁。此时调用普通登录 API-002 返回 403 `FORBIDDEN`。
 
+登录（API-002）后或页面刷新时，客户端通过 `GET /api/v1/auth/sessions/current` 查询当前 Cookie 的身份。家长和管理员返回 `accountId` 与 `role`，儿童仅返回 `role: CHILD` 以恢复交接页。无有效身份返回 401，成功响应使用 `Cache-Control: no-store`。API-003 允许管理员注销当前设备的账号会话。
+
+管理员工作台通过 `GET /api/v1/admin/story-versions` 分页读取资料库各状态版本，包含正文与全部分支。该查询只对管理员开放，并排除家庭原创绘本。知识列表单独使用 API-029。两个页签均遵循每页最多 50 项的分页规则。
+
 公共术语、标识语义与枚举见[公共术语表](../standards/glossary.md)。详细请求响应、错误及幂等规则见[接口示例](api-contract-v0.4.json)。
 
 | 编号 | 方法与路径 | 权限 |
 | --- | --- | --- |
 | API-001 | POST /api/v1/auth/registrations | 匿名 |
 | API-002 | POST /api/v1/auth/sessions | 匿名 |
-| API-003 | DELETE /api/v1/auth/sessions/current | 家长或当前受限儿童 |
+| API-003 | DELETE /api/v1/auth/sessions/current | 家长、当前受限儿童或内容管理员 |
 | API-004 | GET /api/v1/child-profiles | 已认证家长且归本人 |
 | API-005 | POST /api/v1/child-profiles | 已认证家长 |
 | API-006 | PATCH /api/v1/child-profiles/{profile_id} | 已认证家长且归本人 |
