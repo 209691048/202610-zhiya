@@ -1062,6 +1062,7 @@ async function refreshIdentity() {
 async function signIn(account, password) {
   resetAuthentication()
   const epoch = authEpoch
+  const entryHash = location.hash
   let result
   try {
     result = await login(account, password)
@@ -1096,14 +1097,23 @@ async function signIn(account, password) {
   if (epoch !== authEpoch) return
   await loadBooks()
   if (epoch !== authEpoch) return
-  await loadRecommendations()
-  if (epoch !== authEpoch) return
   setToast('已登录知芽家长空间')
-  if (state.route.name === 'workshop') {
-    navigate(state.route.sourceSessionId ? `workshop/continue/${state.route.sourceSessionId}` : 'workshop')
-    return
+  const route = parseRoute()
+  if (route.name === 'reader' && route.sessionId) {
+    const readingSameRoute = state.route.name === 'reader' && state.route.sessionId === route.sessionId
+    if (!readingSameRoute || (!state.sessionLoading && state.currentSession?.readingSessionId !== route.sessionId)) {
+      await syncRoute()
+    }
+  } else if (route.name === 'account' && ['growth', 'overview'].includes(route.section)) {
+    if (!state.sessionsLoaded && !state.sessionsLoading) await syncRoute()
+  } else if (location.hash === entryHash) {
+    if (route.name === 'workshop') {
+      await handleRoute()
+    } else {
+      navigate(state.books.length ? 'library' : 'account/children')
+    }
   }
-  navigate(state.books.length ? 'library' : 'account/children')
+  if (epoch === authEpoch) await loadRecommendations()
 }
 
 async function signUp(account, password) {
@@ -1810,7 +1820,7 @@ async function writeReading(operation) {
   const epoch = authEpoch
   const generation = readingEpoch
   const routeHash = location.hash
-  const supersededInitial = operation.kind === 'page' ? activeInitialGuidance : null
+  const supersededInitial = ['page', 'finish'].includes(operation.kind) ? activeInitialGuidance : null
   // User writes supersede an automatic prompt. The server arbitrates via expectedRevision.
   activeInitialGuidance = initial ? operation : null
   if (!initial) state.sessionBusy = true
@@ -1871,8 +1881,9 @@ async function writeReading(operation) {
         if (error.status === 409 && error.code === 'SESSION_CONFLICT'
             && routeHash === location.hash && state.route.name === 'reader' && state.route.sessionId === operation.sessionId
             && onlyInitialAdvancedSession(supersededInitial, operation.payload.expectedRevision, detail)) {
-          // Only the automatic question won. Retry the same turn with a fresh revision and key.
+          // Only the automatic question won. Reapply the user's action to its confirmed revision.
           state.sessionBusy = false
+          if (operation.kind === 'finish') return await completeReading()
           return await recordPageChange(operation.payload.pageNumber)
         }
       } catch {
@@ -2121,7 +2132,7 @@ async function handleRoute() {
   } else if (route.name === 'detail' && route.versionId) {
     await loadDetail(route.versionId, route.source)
   } else if (route.name === 'reader') {
-    await loadReaderRoute()
+    if (route.previewVersionId || state.auth.authenticated) await loadReaderRoute()
   } else if (route.name === 'child') {
     if (state.auth.status === 'child' && !state.childMode) await restoreChildMode(route.sessionId)
   } else if (route.name === 'account' && ['growth', 'overview'].includes(route.section)) {

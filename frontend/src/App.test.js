@@ -77,6 +77,18 @@ it('opens cold-start growth history before the saved bookshelf selection is rest
   expect(listReadingSessions).toHaveBeenCalledTimes(1)
 })
 
+it('opens the saved summary from a finished history row', async () => {
+  const finished = { ...historyRow(11, [1]), currentPage: 1 }
+  listReadingSessions.mockResolvedValue([finished])
+  getReadingSession.mockResolvedValue({ session: finished, events: [], report: { status: 'READY', summary: '今天读了第一页' } })
+  listStorybooks.mockResolvedValue([book])
+  await open('account/growth')
+  await wrapper.get('.recent-item button.secondary').trigger('click')
+  await vi.waitFor(() => expect(wrapper.text()).toContain('今天读了第一页'))
+  expect(getReadingSession).toHaveBeenCalledWith(11)
+  expect(createReadingSession).not.toHaveBeenCalled()
+})
+
 it('opens cold-start book details after identity verification while the bookshelf restores', async () => {
   const releaseSecondPage = holdBookshelfPage(2)
   let verifyIdentity
@@ -862,6 +874,72 @@ it('restores the guardian view on focus after another tab unlocks it', async () 
   expect(location.hash).toBe('#account/overview')
   expect(wrapper.find('.site-header').exists()).toBe(true)
   expect(parentUnlock).not.toHaveBeenCalled()
+})
+
+it('restores a finished reader route reached while login is pending', async () => {
+  vi.stubEnv('MODE', 'public')
+  try {
+    const finished = { ...historyRow(55, [1]), currentPage: 1, mode: 'PARENT_CHILD' }
+    listProfiles.mockRejectedValueOnce(new ApiError('请先登录', { status: 401, code: 'AUTH_REQUIRED' }))
+    getReadingSession.mockResolvedValue({ session: finished, events: [], report: { status: 'READY', summary: '今天读完了这本绘本' } })
+    let completeLogin
+    login.mockReturnValueOnce(new Promise((resolve) => { completeLogin = resolve }))
+    await open('auth')
+
+    const form = wrapper.get('.auth-card')
+    await form.get('input[autocomplete="username"]').setValue('parent-test')
+    await form.get('input[type="password"]').setValue('password123')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(login).toHaveBeenCalledTimes(1)
+
+    window.history.replaceState({}, '', '/#reader/55')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await flushPromises()
+    expect(getReadingSession).not.toHaveBeenCalled()
+
+    completeLogin({ data: { accountId: 1 } })
+    await flushPromises()
+    expect(location.hash).toBe('#reader/55')
+    expect(wrapper.text()).toContain('今天读完了这本绘本')
+    expect(getReadingSession).toHaveBeenCalledExactlyOnceWith(55)
+    expect(createReadingSession).not.toHaveBeenCalled()
+  } finally {
+    vi.unstubAllEnvs()
+  }
+})
+
+it('loads growth history after reaching it while login is pending', async () => {
+  vi.stubEnv('MODE', 'public')
+  try {
+    listProfiles.mockRejectedValueOnce(new ApiError('请先登录', { status: 401, code: 'AUTH_REQUIRED' }))
+    listReadingSessions.mockResolvedValue([historyRow(55, [1])])
+    let completeLogin
+    login.mockReturnValueOnce(new Promise((resolve) => { completeLogin = resolve }))
+    await open('auth')
+
+    const form = wrapper.get('.auth-card')
+    await form.get('input[autocomplete="username"]').setValue('parent-test')
+    await form.get('input[type="password"]').setValue('password123')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(login).toHaveBeenCalledOnce()
+
+    window.history.replaceState({}, '', '/#account/growth')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await flushPromises()
+    expect(listReadingSessions).not.toHaveBeenCalled()
+
+    completeLogin({ data: { accountId: 1 } })
+    await flushPromises()
+    expect(location.hash).toBe('#account/growth')
+    expect(listReadingSessions).toHaveBeenCalledOnce()
+    const row = wrapper.get('.recent-item')
+    expect(row.text()).toContain('阅读记录 #55')
+    expect(row.get('button.secondary').text()).toContain('查看小结')
+  } finally {
+    vi.unstubAllEnvs()
+  }
 })
 
 it('keeps a fresh anonymous visit on login and offers unlock if the server identifies a child device', async () => {
