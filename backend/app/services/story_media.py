@@ -16,7 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MEDIA_DIR_PREFIX = ("knowledge-base_v2.5", "图片")
 DEFAULT_MEDIA_ROOT = (REPO_ROOT.joinpath(*MEDIA_DIR_PREFIX)).resolve()
 DEFAULT_COVER_MAPPING = REPO_ROOT / "data" / "seed" / "cover_mapping.json"
+DEFAULT_TEMPLATE_VERSIONS = REPO_ROOT / "data" / "seed" / "story_versions.json"
+DEFAULT_TEMPLATE_PAGES = REPO_ROOT / "data" / "seed" / "story_pages.json"
 SEED_COVER_SOURCE_REF = "妈妈夸我说的队 · 知芽项目自研绘本"
+TEMPLATE_VERSION_LICENSE_NOTE = "模型生成原创文字，配合知芽项目自研非商用模板插画（NO-COMMERCIAL），待家长审核"
+TEMPLATE_PAGE_LICENSE = "NO-COMMERCIAL"
+AGE_BAND_BOUNDS = {"AGE_3_4": (3, 4), "AGE_4_5": (4, 5), "AGE_5_6": (5, 6)}
 ALLOWED_IMAGE_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -471,6 +476,100 @@ def ensure_opening_media(db: sqlite3.Connection, version: sqlite3.Row, *, page_n
     for entry in entries:
         if entry is not None and not _pinned_blob_is_readable(entry):
             raise MediaDependencyError("Pinned opening image is unavailable")
+
+
+def ensure_version_pages_media(db: sqlite3.Connection, version: sqlite3.Row, page_numbers: list[int]) -> dict:
+    """Verify the source version manifest and every referenced page's pinned blob are readable."""
+    manifest = pin_version_media(db, version)
+    pages = manifest.get("pages", {})
+    for page_no in dict.fromkeys(page_numbers):
+        entry = pages.get(str(page_no))
+        if entry is not None and not _pinned_blob_is_readable(entry):
+            raise MediaDependencyError("Pinned page image is unavailable")
+    return manifest
+
+
+def _template_catalog() -> list[dict]:
+    try:
+        versions = json.loads(DEFAULT_TEMPLATE_VERSIONS.read_text(encoding="utf-8"))
+        pages = json.loads(DEFAULT_TEMPLATE_PAGES.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise MediaDependencyError("Template illustration catalog is unavailable") from exc
+    if not isinstance(versions, list) or not isinstance(pages, list):
+        raise MediaDependencyError("Template illustration catalog is invalid")
+    pages_by_version: dict[int, list[dict]] = {}
+    for page in pages:
+        if isinstance(page, dict) and "version_id" in page and "page_no" in page:
+            pages_by_version.setdefault(int(page["version_id"]), []).append(page)
+    catalog = []
+    for version in versions:
+        if not isinstance(version, dict) or version.get("source_ref") != SEED_COVER_SOURCE_REF:
+            continue
+        vid = int(version["id"])
+        ordered = sorted(pages_by_version.get(vid, ()), key=lambda item: int(item["page_no"]))
+        assets: list[tuple[str, str]] = []
+        for item in ordered:
+            ref = item.get("image_ref")
+            note = item.get("image_license_note")
+            if isinstance(note, str) and note.strip() == TEMPLATE_PAGE_LICENSE and _image_path_parts(ref) is not None:
+                assets.append((str(ref), TEMPLATE_PAGE_LICENSE))
+        if len(assets) >= 4:
+            catalog.append({
+                "version_id": vid,
+                "age_min": int(version["age_min"]),
+                "age_max": int(version["age_max"]),
+                "topics": set(version.get("topics_json") or ()),
+                "assets": assets,
+            })
+    if not catalog:
+        raise MediaDependencyError("No licensed template illustrations are available")
+    return catalog
+
+
+def select_template_illustrations(age_band: str, topic: str, page_count: int) -> list[tuple[str, str]]:
+    """Select an ordered set of licensed template illustrations matching age band and topic."""
+    low, high = AGE_BAND_BOUNDS.get(age_band, (3, 6))
+    try:
+        catalog = _template_catalog()
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise MediaDependencyError("Template illustration catalog is invalid") from exc
+    candidates = [entry for entry in catalog if len(entry["assets"]) >= page_count]
+    if not candidates:
+        raise MediaDependencyError("No template illustration set matches the requested page count")
+    best = max(
+        candidates,
+        key=lambda entry: (
+            topic in entry["topics"],
+            entry["age_min"] <= high and entry["age_max"] >= low,
+            -entry["version_id"],
+        ),
+    )
+    return list(best["assets"][:page_count])
+
+
+def verify_template_illustrations(assets: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Ensure every selected template illustration has an explicit license and decodes cleanly."""
+    root, _ = ensure_media_dependencies()
+    for ref, license_note in assets:
+        if license_note != TEMPLATE_PAGE_LICENSE or _resolve_verified_source(ref, root) is None:
+            raise MediaDependencyError("Template illustration is unavailable")
+    return assets
+
+
+def resolve_optional_template_illustrations(
+    age_band: str, topic: str, total_pages: int, start_index: int
+) -> list[tuple[str, str | None]]:
+    """Use licensed templates for new continuation pages when available in the active media root."""
+    needed = total_pages - start_index
+    if needed <= 0:
+        return []
+    selected = select_template_illustrations(age_band, topic, total_pages)[start_index:]
+    if not os.environ.get("ZHIYA_MEDIA_ROOT", "").strip():
+        return list(verify_template_illustrations(selected))
+    root, _ = ensure_media_dependencies()
+    if all(note == TEMPLATE_PAGE_LICENSE and _resolve_verified_source(ref, root) is not None for ref, note in selected):
+        return list(selected)
+    return [("none", None)] * needed
 
 
 def cover_ref_from_manifest(version_id: int, manifest: dict) -> str | None:
