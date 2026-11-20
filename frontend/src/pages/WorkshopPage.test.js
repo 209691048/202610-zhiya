@@ -66,6 +66,40 @@ describe('original story workshop', () => {
     expect(wrapper.get('.workshop-blank').text()).toContain('友谊')
   })
 
+  it('opts in to AI illustration when the guardian checks the option', async () => {
+    const wrapper = render()
+    const label = wrapper.findAll('label').find(label => label.text().includes('使用 AI 生成专属插画'))
+    const checkbox = label.get('input[type="checkbox"]')
+    expect(checkbox.element.checked).toBe(false)
+
+    await checkbox.setValue(true)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.props('generateAction')).toHaveBeenCalledWith(expect.objectContaining({ generateIllustrations: true }))
+  })
+
+  it('shows an AI illustration alongside the existing template images', () => {
+    const illustratedDraft = {
+      ...draft,
+      pages: [{ ...draft.pages[0], imageSource: 'AI_GENERATED' }, ...draft.pages.slice(1)],
+    }
+    const wrapper = render({ draft: illustratedDraft, generationStatus: 'review' })
+    const [aiPage, templatePage] = wrapper.findAll('.review-page')
+
+    expect(aiPage.get('img[alt="第 1 页 AI 插画"]').attributes('src')).toBe('/api/v1/media/asset-31-page-1?variant=reading')
+    expect(aiPage.text()).toContain('AI 插画')
+    expect(templatePage.get('img').attributes('src')).toBe('/api/v1/media/asset-31-page-2?variant=reading')
+    expect(templatePage.text()).not.toContain('AI 插画')
+  })
+
+  it('shows the draft cover thumbnail and falls back to the first page image for legacy drafts', async () => {
+    const wrapper = render({ draft: { ...draft, coverRef: 'asset-31-cover' }, generationStatus: 'review' })
+
+    expect(wrapper.get('.draft-cover').attributes('src')).toBe('/api/v1/media/asset-31-cover?variant=thumbnail')
+
+    await wrapper.setProps({ workshop: workshop({ draft, generationStatus: 'review' }) })
+    expect(wrapper.get('.draft-cover').attributes('src')).toBe('/api/v1/media/asset-31-page-1?variant=thumbnail')
+  })
+
   it('previews every page and branch, then enables approval after the parent confirmation', async () => {
     const approveAction = vi.fn(async () => true)
     const wrapper = render({ draft, generationStatus: 'review' }, { approveAction })

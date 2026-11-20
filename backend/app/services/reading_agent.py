@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from itertools import islice
 
 from app.adapters.model import ModelAdapter
 from app.agent import build_prompt, retrieve_knowledge
@@ -24,6 +25,10 @@ QUESTION_FORMS = {
     "UNDERSTOOD": ("你从哪里看出了角色的想法？", "你猜接下来会发生什么？", "你为什么觉得角色会这样想？"),
     "NOT_UNDERSTOOD": ("你能指一指画面里的角色吗？", "角色手里有什么？", "角色的表情是什么样的？"),
 }
+ANSWER_FOLLOWUP_FORMS = {
+    "UNDERSTOOD": "你从画面里的哪个细节看出来的？",
+    "NOT_UNDERSTOOD": "你能在图里指一指刚才说到的东西吗？",
+}
 # These polar questions can all be answered with the approved child-mode buttons.
 CHILD_QUESTION_FORMS = {
     "INITIAL": ("图里有你认识的东西吗？", "图里也发生了这件事吗？", "你喜欢这一幕吗？"),
@@ -44,22 +49,53 @@ SENSITIVE = re.compile(
 PERSONAL_QUESTION = re.compile(r"您|我|你(?!觉得|猜|看见|看到|能指一指)")
 SHORT_QUESTION = re.compile(r"[\u3400-\u9fff，、, ]{2,72}\?")
 PAGE_CLAUSE = re.compile(r"[\u3400-\u9fffA-Za-z0-9 ]+")
+EXCERPT_CHARS = 18
+GENERIC_ANSWER_PHRASES = re.compile(
+    r"我(?:觉得|认为|喜欢|想到|想|猜|看到|看见)|觉得|认为|喜欢|看到|看见|"
+    r"因为|所以|然后|这个|那个|这里|那里|可能|应该|不知道|不清楚|不确定"
+)
 
 
-def question_options(page_text: str, forms: tuple[str, ...]) -> dict[str, list[str]]:
-    # Quote only short excerpts of the already published page. Never quote model or user prose.
-    excerpts = []
+def page_clauses(page_text: str):
+    # Only use published page text that passes the existing quotation rules.
     for clause in re.split(r"[，。！？；：、‘’“”「」\n,.!?;:]", page_text):
         clause = clause.strip()
         if len(clause) >= 2 and PAGE_CLAUSE.fullmatch(clause) and not SENSITIVE.search(clause):
-            excerpts.append(clause if len(clause) <= 18 else clause[:18] + "…")
-        if len(excerpts) == 3:
-            break
+            yield clause
+
+
+def question_options(page_text: str, forms: tuple[str, ...]) -> dict[str, list[str]]:
+    excerpts = [clause[:EXCERPT_CHARS] + ("…" if len(clause) > EXCERPT_CHARS else "")
+                for clause in islice(page_clauses(page_text), 3)]
     options = {}
     for excerpt in excerpts or [""]:
         lead = f"读到“{excerpt}”时，" if excerpt else PAGE_LEAD
         options[excerpt] = [lead + form for form in forms]
     return options
+
+
+def matching_answer_excerpt(page_text: str, confirmed_answer: str) -> str | None:
+    """Select a short excerpt locally, without returning any part of the submitted answer."""
+    answer = unicodedata.normalize("NFKC", confirmed_answer)
+    if not answer or SENSITIVE.search(answer):
+        return None
+
+    # Separate generic phrasing so it cannot count toward or join two matching details.
+    answer = GENERIC_ANSWER_PHRASES.sub("，", answer)
+    best_size = 1
+    excerpt = None
+    for clause in page_clauses(page_text):
+        match = SequenceMatcher(None, clause, answer, autojunk=False).find_longest_match()
+        size = len(clause[match.a:match.a + match.size].strip())
+        if size <= best_size:
+            continue
+        best_size = size
+        context_before = max(0, (EXCERPT_CHARS - match.size) // 2)
+        start = min(max(0, match.a - context_before), max(0, len(clause) - EXCERPT_CHARS))
+        end = start + EXCERPT_CHARS
+        excerpt = ("…" if start else "") + clause[start:end] + ("…" if end < len(clause) else "")
+
+    return excerpt
 
 
 async def answer_question(model_adapter: ModelAdapter, *, input_text: str, age_band: str | None,
@@ -135,10 +171,19 @@ def selected_question(text: str, options: dict[str, list[str]], *, child_forms: 
 
 
 async def run_agent(model_adapter: ModelAdapter, *, feedback: str, age_band: str | None,
-                    topics: list[str], page_text: str, previous_question: str, child_mode: bool) -> AgentResult:
+                    topics: list[str], page_text: str, previous_question: str, child_mode: bool,
+                    confirmed_answer: str = "") -> AgentResult:
     """Return a displayable result or raise a dependency error for the event ledger."""
     if previous_question and SENSITIVE.search(unicodedata.normalize("NFKC", previous_question)):
         return AgentResult(status="BLOCKED", strategyType="SAFETY_BLOCK", outputText=HANDOFF)
+    strategy = "CONCRETE_RECALL" if feedback == "NOT_UNDERSTOOD" else "CONTEXT_QUESTION"
+    followup = ANSWER_FOLLOWUP_FORMS.get(feedback)
+    if not child_mode and followup:
+        excerpt = matching_answer_excerpt(page_text, confirmed_answer)
+        if excerpt is not None:
+            question = f"读到“{excerpt}”时，{followup}"
+            if question != previous_question:
+                return AgentResult(status="GENERATED", strategyType=strategy, outputText=question)
     knowledge = retrieve_knowledge(KnowledgeQuery(age_band=age_band, topics=topics,
                                                   task_type="GUIDANCE", query_text=page_text))
     selected = select_knowledge_items(knowledge.items, 5)
@@ -176,7 +221,7 @@ async def run_agent(model_adapter: ModelAdapter, *, feedback: str, age_band: str
         return AgentResult(status="BLOCKED", strategyType="SAFETY_BLOCK", outputText=HANDOFF)
     return AgentResult(
         status="GENERATED", outputText=question,
-        strategyType="CONCRETE_RECALL" if feedback == "NOT_UNDERSTOOD" else "CONTEXT_QUESTION",
+        strategyType=strategy,
         sources=[AgentSource(knowledgeItemId=item.knowledge_item_id, sourceTitle=item.source_title)
                  for item in selected],
     )

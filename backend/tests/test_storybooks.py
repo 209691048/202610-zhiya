@@ -100,6 +100,34 @@ def test_filters_pagination_and_safe_media_projection(bookshelf):
     assert [branch["branchId"] for branch in book["branches"]] == [1]
 
 
+def test_public_metadata_requires_seed_source_and_library_type(bookshelf):
+    first, _, path = bookshelf
+    source_ref = "妈妈夸我说的队 · 知芽项目自研绘本"
+    title = "云朵棉花糖"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE story_versions SET title = ?, source_ref = ? WHERE id = 22", (title, source_ref))
+        for book_id, source, age_max in ((22, source_ref, 5), (11, "其他绘本来源", 4)):
+            db.execute("INSERT INTO storybooks VALUES (?, NULL, 'LIBRARY', 1)", (book_id,))
+            db.execute("""INSERT INTO story_versions
+                (id, storybook_id, version_no, title, topics_json, age_min, age_max,
+                 source_ref, license_note, status, reviewed_by_id, reviewed_at, created_at, branching)
+                VALUES (?, ?, 1, ?, '[]', 3, ?, ?, 'test', 'PUBLISHED', 1, 1, 1, 0)""",
+                (book_id * 10 + 1, book_id, title, age_max, source))
+
+    response = first.get("/api/v1/storybooks")
+    assert response.status_code == 200
+    items = {item["storyVersionId"]: item for item in response.json()["data"]["items"]}
+    for version_id, expected in (
+        (221, ("以撒（笔名）", 3, 5, None)),
+        (111, (None, 3, 4, "AGE_3_4")),
+        (22, (None, 5, 6, "AGE_5_6")),
+    ):
+        detail = first.get(f"/api/v1/story-versions/{version_id}")
+        assert detail.status_code == 200
+        for book in (items[version_id], detail.json()["data"]):
+            assert (book["author"], book["ageMin"], book["ageMax"], book["ageBand"]) == expected
+
+
 def test_authentication_and_dependency_failure(bookshelf, monkeypatch, tmp_path):
     first, _, _ = bookshelf
     with TestClient(app, base_url="https://testserver") as anonymous:
@@ -345,6 +373,52 @@ class _FakeAdapter:
         if self.exc:
             raise self.exc
         return self.result
+
+
+def test_finish_uses_latest_parent_answer_in_local_report(bookshelf, monkeypatch):
+    first, second, path = bookshelf
+    headers = {"X-CSRF-Token": first.cookies["zhiya_csrf"]}
+    other_headers = {"X-CSRF-Token": second.cookies["zhiya_csrf"]}
+    adapter = _FakeAdapter(exc=AssertionError("answer-based report must not call the model"))
+    monkeypatch.setattr(app.state, "model_adapter", adapter, raising=False)
+    session = _started_session(first, headers, path)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("UPDATE story_pages SET body_text=? WHERE version_id=11 AND page_no=1", ("小兔打开雨伞。",))
+    base = f"/api/v1/reading-sessions/{session}"
+    for revision, (event_type, page, fields) in enumerate([
+        ("STARTED", 1, {}),
+        ("ANSWER", 1, {"inputText": "之前的回答"}),
+        ("ANSWER", 1, {"inputText": "我喜欢小兔"}),
+        ("PAGE_CHANGED", 2, {}),
+    ]):
+        saved = first.post(f"{base}/events", headers=headers, json={
+            "eventType": event_type, "pageNumber": page,
+            "expectedRevision": revision, "clientEventId": f"event-{revision}", **fields,
+        })
+        assert saved.status_code == 201
+
+    body = {"reason": "USER_FINISH", "expectedRevision": 4, "clientEventId": "finish-with-answer"}
+    done = first.post(f"{base}/completions", headers=headers, json=body)
+    assert done.status_code == 200
+    assert done.headers["Cache-Control"] == "private, no-store"
+    data = done.json()["data"]
+    assert data["session"]["status"] == "FINISHED"
+    report = data["report"]
+    assert report["status"] == "READY"
+    assert "孩子在第 1 页的回答：“我喜欢小兔”" in report["summary"]
+    assert "之前的回答" not in report["summary"]
+    activity, = report["activities"]
+    steps = " ".join(activity["steps"])
+    assert "第 1 页" in steps and "小兔打开雨伞" in steps
+
+    replay = first.post(f"{base}/completions", headers=headers, json=body)
+    assert replay.status_code == 200 and replay.json()["data"] == data
+    assert replay.headers["Cache-Control"] == "private, no-store"
+    detail = first.get(base)
+    assert detail.status_code == 200 and detail.json()["data"]["report"] == report
+    assert second.get(base).status_code == 404
+    assert second.post(f"{base}/completions", headers=other_headers, json=body).status_code == 404
+    assert not adapter.calls
 
 
 @pytest.mark.parametrize("suggestion_id, suggestion, activity_name, materials", [
