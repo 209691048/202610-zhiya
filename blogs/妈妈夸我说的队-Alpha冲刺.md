@@ -341,7 +341,7 @@ Vlog 链接：https://www.bilibili.com/video/BV1SKyazeEJL/
 | 项目 | 链接 |
 |---|---|
 | GitHub 团队仓库 | https://github.com/MumLauds/202610-zhiya |
-| 冲刺计划 | 见本文第一节至第七节 |
+| 冲刺计划 | 见本文第一节至第六节 |
 | 在线体验（桌面） | https://zhiyahuiben.xyz |
 | 在线体验（手机） | https://m.zhiyahuiben.xyz/mobile.html |
 | v0.2.0 版本说明 | https://github.com/MumLauds/202610-zhiya/releases/tag/v0.2.0 |
