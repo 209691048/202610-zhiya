@@ -6,6 +6,48 @@ import FlipBook from './FlipBook.vue'
 let wrapper
 afterEach(() => { wrapper?.unmount(); vi.unstubAllGlobals() })
 
+it('narrates only the active spread and animates a requested adjacent turn', async () => {
+  const book = { on: vi.fn(), flipTo: vi.fn().mockResolvedValue(true), turnTo: vi.fn(), destroy: vi.fn() }
+  vi.stubGlobal('OpenPageFlip', { createBook: () => book })
+  wrapper = mount(FlipBook, {
+    props: { canNarrate: true, pages: [
+      { pageNumber: 1, text: '第一页' },
+      { pageNumber: 2, text: '第二页' },
+    ] },
+  })
+  expect(wrapper.findAll('.page-narration-text')).toHaveLength(1)
+  await wrapper.get('.page-narration-text').trigger('click')
+  expect(wrapper.emitted('narrate')).toHaveLength(1)
+  await expect(wrapper.vm.flipToPage(1)).resolves.toBe(true)
+  expect(book.flipTo).toHaveBeenCalledWith(2)
+  await wrapper.setProps({ pages: [...wrapper.props('pages')] })
+  expect(book.turnTo).not.toHaveBeenCalled()
+})
+
+it('ignores pointer clicks that complete text selection and keeps keyboard activation', async () => {
+  const book = { on: vi.fn(), turnTo: vi.fn(), destroy: vi.fn() }
+  vi.stubGlobal('OpenPageFlip', { createBook: () => book })
+  wrapper = mount(FlipBook, {
+    attachTo: document.body,
+    props: { canNarrate: true, pages: [{ pageNumber: 1, text: '故事正文' }] },
+  })
+  const narration = wrapper.get('.page-narration-text')
+  const selection = window.getSelection()
+  selection.selectAllChildren(narration.element)
+  try {
+    narration.element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 10 }))
+    await narration.trigger('click', { detail: 1, clientX: 50 })
+    expect(wrapper.emitted('narrate')).toBeUndefined()
+    await narration.trigger('click', { detail: 0 })
+    expect(wrapper.emitted('narrate')).toHaveLength(1)
+    narration.element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 10 }))
+    await narration.trigger('click', { detail: 1, clientX: 10 })
+    expect(wrapper.emitted('narrate')).toHaveLength(2)
+  } finally {
+    selection.removeAllRanges()
+  }
+})
+
 it('uses page image refs and placeholders, and restores the actual widget position', async () => {
   let onFlip
   const book = { on: vi.fn((name, handler) => { onFlip = handler }), turnTo: vi.fn((page) => onFlip({ page })), destroy: vi.fn() }

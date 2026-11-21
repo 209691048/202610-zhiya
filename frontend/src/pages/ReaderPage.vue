@@ -31,7 +31,9 @@ const emit = defineEmits(['back', 'library', 'start-session', 'retry-load', 'con
 const flipBook = ref(null)
 const pageIndex = ref(0)
 const turnBusy = ref(false)
+const edgeTurnBusy = ref(false)
 const audioStatus = ref('idle')
+const isPageNarration = ref(false)
 const audioMessage = ref('')
 const childModeOpen = ref(false)
 const childModeBusy = ref(false)
@@ -43,10 +45,17 @@ const guidanceError = ref('')
 const autoGuidanceKey = ref('')
 const previewAnswer = ref('')
 const voiceOpen = ref(false)
-const asking = ref(false)
 const voiceState = ref('idle')
 const voiceError = ref('')
-const transcript = ref(null)
+const childAnswerDraft = ref(null)
+const storyQuestionDraft = ref(null)
+const transcript = computed({
+  get: () => voiceOpen.value ? storyQuestionDraft.value : childAnswerDraft.value,
+  set(value) {
+    const draft = voiceOpen.value ? storyQuestionDraft : childAnswerDraft
+    draft.value = value
+  },
+})
 const transcriptEditor = ref(null)
 let recorder = null
 let recordingStream = null
@@ -93,9 +102,11 @@ const answerText = computed(() => {
   return props.authenticated ? savedAnswer.value?.inputText : ''
 })
 const currentBranches = computed(() => approvedBranchesAt(props.book?.branches, currentPage.value?.pageNumber))
-const showDockFinish = computed(() => currentPage.value?.defaultNextPageNumber == null && !currentBranches.value.length && !readerPages.value[pageIndex.value + 1])
 const rereading = computed(() => pageIndex.value !== progressIndex.value)
-const canFinish = computed(() => !props.loading && !turnBusy.value && !interactionBusy.value && !props.syncRequired && props.session?.status === 'IN_PROGRESS' && (props.session?.preview || props.authenticated))
+const navigationLocked = computed(() => edgeTurnBusy.value || turnBusy.value || interactionBusy.value || props.syncRequired)
+const canTurnNext = computed(() => !navigationLocked.value && Boolean(readerPages.value[pageIndex.value + 1])
+  && (reviewingHistory.value || props.session?.status === 'IN_PROGRESS'))
+const canFinish = computed(() => !props.loading && !navigationLocked.value && props.session?.status === 'IN_PROGRESS' && (props.session?.preview || props.authenticated))
 const mediaAllowed = computed(() => canFinish.value && !rereading.value)
 const narrationKey = computed(() => props.authenticated && !props.loading && !props.syncRequired
   && !props.session?.preview && props.session?.status === 'IN_PROGRESS'
@@ -104,6 +115,20 @@ const narrationKey = computed(() => props.authenticated && !props.loading && !pr
 const canSubmitFeedback = computed(() => mediaAllowed.value && Boolean(currentQuestion.value) && !questionSkipped.value && !questionBlocked.value)
 const canSkipQuestion = computed(() => mediaAllowed.value && !questionSkipped.value)
 const canAnswer = computed(() => props.session?.preview ? mediaAllowed.value : canSubmitFeedback.value)
+const answerDisabled = computed(() => !canAnswer.value || guidanceLoading.value || voiceOpen.value)
+const recordingBusy = computed(() => ['starting', 'recording', 'processing'].includes(voiceState.value))
+const inlineAnswer = computed(() => childAnswerDraft.value?.text ?? '')
+const canNarratePage = computed(() => mediaAllowed.value && !recordingBusy.value && !voiceOpen.value)
+const narrationSelected = computed(() => isPageNarration.value && ['loading', 'playing'].includes(audioStatus.value))
+const parentTip = computed(() => {
+  if (props.session?.preview) return currentPage.value?.answer
+  if (questionBlocked.value) return '先陪孩子聊聊画面中看得见的事物，再决定是否继续。'
+  if (savedAnswer.value) return '孩子回答后，可以选“已理解”或“还没懂”继续聊。也可以请孩子指一指画面中支持他想法的细节。'
+  if (currentQuestion.value) return `围绕第 ${currentPage.value.pageNumber} 页的小提问，给孩子一点观察和思考的时间。可以请孩子先指一指线索，再用自己的话说出来。`
+  return '可以请孩子挑一个画面中最感兴趣的细节，说说自己看到了什么。'
+})
+const canSetChildMode = computed(() => props.authenticated && !props.session?.preview
+  && props.session?.status === 'CREATED' && props.session.mode === 'PARENT_CHILD')
 const reportActivities = computed(() => {
   if (props.report?.status !== 'READY' || !Array.isArray(props.report.activities)) return []
   return props.report.activities.filter(activity => activity?.name && Array.isArray(activity.materials) && Array.isArray(activity.steps))
@@ -172,8 +197,9 @@ async function onPageChange({ storyIndex }) {
   }
   if (storyIndex === pageIndex.value) return
   stopNarration()
-  closeVoice()
+  closeStoryQuestion()
   if (storyIndex <= progressIndex.value) {
+    childAnswerDraft.value = null
     showIndex(storyIndex)
     return
   }
@@ -181,8 +207,7 @@ async function onPageChange({ storyIndex }) {
     flipBook.value?.showPage(pageIndex.value)
     return
   }
-  // Keep the widget and text on confirmed progress while the write is pending.
-  flipBook.value?.showPage(pageIndex.value)
+  // The completed fold stays visible while the server confirms the page.
   turnBusy.value = true
   try {
     await props.recordPage(target.pageNumber)
@@ -191,6 +216,23 @@ async function onPageChange({ storyIndex }) {
   } finally {
     showIndex(progressIndex.value)
     turnBusy.value = false
+  }
+}
+
+async function turnPage(index) {
+  if (navigationLocked.value) return
+  const animation = flipBook.value?.flipToPage?.(index)
+  if (!animation) return onPageChange({ storyIndex: index })
+  edgeTurnBusy.value = true
+  stopNarration()
+  closeStoryQuestion()
+  try {
+    await animation
+  } catch {
+    flipBook.value?.showPage(pageIndex.value)
+    audioMessage.value = '翻页暂时失败，请重试'
+  } finally {
+    edgeTurnBusy.value = false
   }
 }
 
@@ -204,6 +246,7 @@ async function finishReading() {
 }
 
 function stopNarration() {
+  isPageNarration.value = false
   audioGeneration += 1
   speechRequest?.abort()
   speechRequest = null
@@ -262,12 +305,15 @@ watch(narrationKey, (key) => {
 }, { immediate: true, flush: 'post' })
 
 async function playNarration(interactionEventId = null) {
+  if (!canNarratePage.value) return
   if (['playing', 'loading'].includes(audioStatus.value)) {
+    const switchSource = interactionEventId === null && !isPageNarration.value
     stopNarration()
-    return
+    if (!switchSource) return
   }
   if (!currentPage.value || !mediaAllowed.value) return
   stopNarration()
+  isPageNarration.value = interactionEventId === null
   const generation = audioGeneration
   const pageNumber = currentPage.value.pageNumber
   if (!props.session.preview) {
@@ -326,7 +372,7 @@ async function toggleRecording() {
     recorder?.stop()
     return
   }
-  if (!(asking.value ? mediaAllowed.value : canAnswer.value)) return
+  if (!(voiceOpen.value ? mediaAllowed.value : canAnswer.value)) return
   if (props.session?.preview || !props.authenticated) {
     voiceState.value = 'unavailable'
     voiceError.value = '当前是本地预览模式。登录并创建后端阅读会话后才能上传录音。'
@@ -389,7 +435,7 @@ async function toggleRecording() {
       voiceError.value = '录音失败，请重新录制。'
     }
     activeRecorder.start()
-    transcript.value = null
+    if (voiceOpen.value) storyQuestionDraft.value = null
     voiceState.value = 'recording'
   } catch {
     stream?.getTracks().forEach((track) => track.stop())
@@ -414,16 +460,38 @@ function confirmTranscript() {
   voiceError.value = ''
 }
 
-function openVoice(typed = false, question = false) {
-  if (!(question ? mediaAllowed.value : canAnswer.value)) return
-  asking.value = question
+function setInlineAnswer(event) {
+  if (answerDisabled.value || recordingBusy.value) return
+  transcript.value = { text: event.target.value, status: 'draft', source: transcript.value?.source ?? 'typed' }
+}
+
+function recordInlineAnswer() {
+  if (answerDisabled.value) return
+  if (voiceState.value !== 'recording') stopNarration()
+  void toggleRecording()
+}
+
+function cancelOrClearInlineRecording() {
+  if (!recordingBusy.value) childAnswerDraft.value = null
+  cancelRecording()
+  voiceError.value = ''
+}
+
+function submitInlineAnswer() {
+  if (answerDisabled.value || recordingBusy.value || !inlineAnswer.value.trim()) return
+  confirmTranscript()
+  return submitConfirmedAnswer()
+}
+
+function openStoryQuestion() {
+  if (!mediaAllowed.value || recordingBusy.value) return
   stopNarration()
   cancelRecording()
   voiceOpen.value = true
   voiceState.value = 'idle'
-  transcript.value = null
+  storyQuestionDraft.value = null
   voiceError.value = ''
-  if (typed) editQuestionText()
+  editQuestionText()
 }
 
 async function submitUnderstanding(feedback) {
@@ -478,11 +546,13 @@ async function submitConfirmedAnswer() {
   interactionBusy.value = true
   voiceError.value = ''
   try {
-    const saved = asking.value ? await props.askQuestion(text) : await props.submitAnswer(text)
+    const isStoryQuestion = voiceOpen.value
+    const saved = isStoryQuestion ? await props.askQuestion(text) : await props.submitAnswer(text)
     if (saved) {
-      closeVoice()
+      if (isStoryQuestion) closeStoryQuestion()
+      else childAnswerDraft.value = null
     } else {
-      voiceError.value = asking.value ? '提问尚未确认保存，请核对进度后重试。' : '回答尚未确认保存，请检查页面提示后重试。'
+      voiceError.value = isStoryQuestion ? '提问尚未确认保存，请核对进度后重试。' : '回答尚未确认保存，请检查页面提示后重试。'
     }
   } finally {
     interactionBusy.value = false
@@ -504,10 +574,16 @@ function cancelRecording() {
   voiceState.value = 'idle'
 }
 
-function closeVoice() {
+function closeStoryQuestion() {
   cancelRecording()
-  transcript.value = null
+  storyQuestionDraft.value = null
   voiceOpen.value = false
+  voiceError.value = ''
+}
+
+function closeVoice() {
+  closeStoryQuestion()
+  childAnswerDraft.value = null
 }
 
 function leaveReader() {
@@ -517,7 +593,7 @@ function leaveReader() {
 }
 
 function openChildMode() {
-  if (!props.authenticated || props.session?.preview || props.session?.status !== 'CREATED' || props.session.mode !== 'PARENT_CHILD') return
+  if (!canSetChildMode.value || navigationLocked.value) return
   childMinutes.value = 10
   childAllowedVersions.value = props.book?.storyVersionId ? [props.book.storyVersionId] : []
   childModeOpen.value = true
@@ -557,7 +633,12 @@ async function refreshProgress() {
 }
 
 // A recording uses a revision-bound recognition request. Narration belongs to the page.
-watch(() => props.session?.revision, closeVoice)
+// An ASK write changes the revision without changing the child's question.
+watch(() => props.session?.revision, closeStoryQuestion)
+watch([() => currentQuestion.value?.interactionEventId, questionSkipped, questionBlocked], () => {
+  if (!voiceOpen.value) cancelRecording()
+  childAnswerDraft.value = null
+})
 watch([
   () => props.session?.readingSessionId,
   () => props.session?.currentPage,
@@ -580,60 +661,78 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
   <main v-if="loading" class="reader-page page-width">
     <div class="reader-loading"><div><div class="spinner" style="margin:0 auto 12px" /><p>正在恢复阅读会话…</p></div></div>
   </main>
-  <main v-else-if="book && session" class="reader-page page-width">
-    <div class="reader-heading">
-      <div>
-        <button class="text-button" type="button" @click="leaveReader">← 返回绘本详情</button>
-        <h1>{{ book.title }}</h1>
-        <p>第 {{ currentPage?.pageNumber }} 页 · 共 {{ book.pageCount }} 页 · {{ session.preview ? '本地预览' : syncRequired ? '进度待确认' : turnBusy ? '正在同步进度' : rereading ? `回看已读页，服务端进度为第 ${session.currentPage} 页` : '后端会话已同步' }}</p>
-        <p v-if="rereading && session.status === 'IN_PROGRESS'">回看期间仅阅读文字和插图；返回当前进度后可继续朗读与录音。</p>
-        <button v-if="syncRequired" class="secondary" type="button" :disabled="turnBusy" @click="refreshProgress">确认并同步进度</button>
-        <button v-else-if="session.status === 'CREATED'" class="primary" type="button" @click="emit('start-session')">开始本次阅读</button>
-        <button v-if="!showDockFinish && session.status === 'IN_PROGRESS'" class="secondary" type="button" :disabled="!canFinish" @click="finishReading">结束本次阅读</button>
-        <button
-          v-if="authenticated && !session.preview && canContinueStory(session, book)"
-          class="secondary"
-          type="button"
-          @click="emit('continue-story')"
-        >续写这个故事</button>
-      </div>
-      <span class="pill">{{ report ? '本次阅读已完成' : '亲子共读模式' }}</span>
-    </div>
-
+  <main v-else-if="book && session" class="reader-page page-width reader-page--storybook">
     <div class="reader-layout">
       <section class="reader-main">
-        <div class="flipbook-stage">
-          <FlipBook
-            ref="flipBook"
-            :key="`${session.readingSessionId}-${reviewingHistory}`"
-            :pages="readerPages"
-            :book-pages="book.pages"
-            :page-count="book.pageCount"
-            :visit-pages="reviewingHistory || rereading ? visitedPages : null"
-            :title="book.title"
-            :start-page="pageIndex"
-            :disabled="turnBusy || interactionBusy || syncRequired"
-            @page-change="onPageChange"
-            @error="audioMessage = $event"
-          />
-          <p class="flip-hint">拖动书页边缘，或点击外侧翻页</p>
+        <div class="reader-heading">
+          <div>
+            <button class="text-button" type="button" @click="leaveReader">← 返回绘本详情</button>
+            <h1>{{ book.title }}</h1>
+            <p>第 {{ currentPage?.pageNumber }} 页 · 共 {{ book.pageCount }} 页 · {{ session.preview ? '本地预览' : syncRequired ? '进度待确认' : turnBusy ? '正在同步进度' : rereading ? `回看已读页，服务端进度为第 ${session.currentPage} 页` : '后端会话已同步' }}</p>
+            <p v-if="rereading && session.status === 'IN_PROGRESS'">回看期间仅阅读文字和插图；返回当前进度后可继续朗读与录音。</p>
+            <button v-if="syncRequired" class="secondary" type="button" :disabled="turnBusy" @click="refreshProgress">确认并同步进度</button>
+            <button v-else-if="session.status === 'CREATED'" class="primary" type="button" @click="emit('start-session')">开始本次阅读</button>
+            <button v-if="session.status === 'IN_PROGRESS'" class="secondary" type="button" :disabled="!canFinish" @click="finishReading">结束本次阅读</button>
+            <button v-if="canSetChildMode" class="secondary" type="button" :disabled="navigationLocked" @click="openChildMode">设置并进入儿童模式</button>
+            <button
+              v-if="authenticated && !session.preview && canContinueStory(session, book)"
+              class="secondary"
+              type="button"
+              @click="emit('continue-story')"
+            >续写这个故事</button>
+          </div>
+          <span v-if="report || session.mode === 'CHILD_SOLO'" class="pill">{{ report ? '本次阅读已完成' : '儿童自主阅读' }}</span>
         </div>
-        <nav class="reader-dock" aria-label="阅读控制">
-          <button class="dock-button" type="button" :disabled="pageIndex === 0 || turnBusy || interactionBusy || syncRequired" @click="onPageChange({ storyIndex: pageIndex - 1 })"><span class="dock-glyph">‹</span>上一页</button>
-          <button class="dock-button" type="button" :disabled="!mediaAllowed" @click="playNarration()"><span class="dock-glyph">{{ audioStatus === 'playing' ? 'Ⅱ' : '▶' }}</span>{{ audioStatus === 'playing' ? '暂停朗读' : audioStatus === 'loading' ? '取消朗读' : '朗读' }}</button>
-          <button class="dock-button primary" type="button" :disabled="!canAnswer" @click="openVoice()"><span class="dock-glyph">芽</span>语音识别</button>
-          <button v-if="showDockFinish" class="dock-button" type="button" :disabled="!canFinish" @click="finishReading"><span class="dock-glyph">✓</span>完成</button>
-          <button v-else class="dock-button" type="button" :disabled="turnBusy || interactionBusy || syncRequired || !readerPages[pageIndex + 1] || (!reviewingHistory && session.status !== 'IN_PROGRESS')" @click="onPageChange({ storyIndex: pageIndex + 1 })"><span class="dock-glyph">›</span>下一页</button>
-        </nav>
+
+        <div class="flipbook-stage">
+          <div class="reader-book-area">
+            <FlipBook
+              ref="flipBook"
+              :key="`${session.readingSessionId}-${reviewingHistory}`"
+              :pages="readerPages"
+              :book-pages="book.pages"
+              :page-count="book.pageCount"
+              :visit-pages="reviewingHistory || rereading ? visitedPages : null"
+              :title="book.title"
+              :start-page="pageIndex"
+              :disabled="navigationLocked"
+              :can-narrate="canNarratePage"
+              @page-change="onPageChange"
+              @narrate="playNarration()"
+              @error="audioMessage = $event"
+            />
+            <button class="reader-edge reader-edge--previous" type="button" :disabled="pageIndex === 0 || navigationLocked" @click="turnPage(pageIndex - 1)">
+              <span aria-hidden="true">‹</span><span class="sr-only">上一页</span>
+            </button>
+            <button class="reader-edge reader-edge--next" type="button" :disabled="!canTurnNext" @click="turnPage(pageIndex + 1)">
+              <span aria-hidden="true">›</span><span class="sr-only">下一页</span>
+            </button>
+          </div>
+          <p class="flip-hint"><span aria-hidden="true">☞</span> 提示：点击书页左侧或右侧即可翻页</p>
+        </div>
       </section>
 
       <aside class="reader-side">
-        <div v-if="audioMessage" class="side-card audio">
-          <div class="audio-line"><span>{{ audioMessage }}</span></div>
-        </div>
+        <section class="side-card narration-card">
+          <div class="reader-mascot" aria-hidden="true"><span class="reader-foliage"></span><img width="326" height="380" src="/assets/mascot/yaya-reader.webp" alt=""></div>
+          <h2><span class="reader-card-icon reader-card-icon--book" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5c-3-2-6-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-4-1-7-1-10 1Zm0 0v15"/></svg></span> 阅读模式</h2>
+          <div class="reader-mode-options" role="group" aria-label="阅读模式">
+            <button type="button" :aria-pressed="!narrationSelected" @click="stopNarration">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 5c-3-2-6-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-4-1-7-1-10 1Zm0 0v15"/></svg>
+              <span>亲子共读<small>（自由阅读）</small></span>
+              <span v-if="!narrationSelected" class="mode-check" aria-hidden="true">✓</span>
+            </button>
+            <button class="reader-narration-button" type="button" :aria-pressed="narrationSelected" :disabled="!canNarratePage" @click="playNarration()">
+              <span class="mode-play-icon" aria-hidden="true">{{ narrationSelected ? 'Ⅱ' : '▶' }}</span>
+              <span>{{ audioStatus === 'playing' && narrationSelected ? '暂停朗读' : audioStatus === 'loading' && narrationSelected ? '取消朗读' : '朗读' }}<small>（听绘本朗读）</small></span>
+              <span v-if="narrationSelected" class="mode-check" aria-hidden="true">✓</span>
+            </button>
+          </div>
+          <p v-if="audioMessage" class="narration-status" role="status">{{ audioMessage }}</p>
+        </section>
         <section class="side-card question-card">
-          <h2>✦ 共读小提问</h2>
-          <p v-if="session.preview">{{ `本地预览问题：${currentPage?.question}` }}</p>
+          <h2><span class="reader-card-icon reader-card-icon--question" aria-hidden="true">?</span> 共读小提问</h2>
+          <p v-if="session.preview">{{ currentPage?.question || '看看这一页，你发现了什么？' }}</p>
           <p v-else-if="questionSkipped">这一页的提问已跳过，可以继续翻页。</p>
           <p v-else-if="questionBlocked">{{ latestGuidanceEvent.outputText || '这个问题先请家长和孩子一起聊一聊。' }}</p>
           <p v-else-if="currentQuestion">{{ currentQuestion.outputText }}</p>
@@ -645,12 +744,36 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
           <p v-else-if="savedAnswer" class="question-saved" role="status">本页回答已保存。</p>
           <button v-if="guidanceError && !currentQuestion && !questionSkipped && !questionBlocked && !session.preview" class="text-button question-retry" type="button" :disabled="interactionBusy || guidanceLoading || syncRequired" @click="retryQuestion">重新生成本页问题</button>
           <div class="question-actions">
-            <button class="secondary" type="button" :disabled="!canSubmitFeedback || interactionBusy || guidanceLoading" @click="submitUnderstanding('UNDERSTOOD')">已理解</button>
-            <button class="secondary" type="button" :disabled="!canSubmitFeedback || interactionBusy || guidanceLoading" @click="submitUnderstanding('NOT_UNDERSTOOD')">还没懂</button>
-            <button class="secondary" type="button" :disabled="!canSkipQuestion || interactionBusy" @click="skipQuestion">跳过本页</button>
-            <button class="primary" type="button" :disabled="!canAnswer || interactionBusy || guidanceLoading" @click="openVoice(true)">输入回答</button>
-            <button v-if="!session.preview" class="secondary" type="button" :disabled="!mediaAllowed || guidanceLoading" @click="openVoice(true, true)">问问芽芽</button>
+            <button class="secondary feedback-understood" type="button" :disabled="!canSubmitFeedback || guidanceLoading || recordingBusy" @click="submitUnderstanding('UNDERSTOOD')"><span aria-hidden="true">✓</span> 已理解</button>
+            <button class="secondary feedback-unclear" type="button" :disabled="!canSubmitFeedback || guidanceLoading || recordingBusy" @click="submitUnderstanding('NOT_UNDERSTOOD')"><span aria-hidden="true">?</span> 还没懂</button>
           </div>
+          <form class="reader-answer" @submit.prevent="submitInlineAnswer">
+            <div class="reader-answer-input">
+              <button class="mic-button" type="button" :class="{ recording: voiceState === 'recording' }" :disabled="answerDisabled || voiceState === 'starting' || voiceState === 'processing'" :aria-label="voiceState === 'recording' ? '停止并识别' : '开始录音'" @click="recordInlineAnswer">
+                <svg v-if="voiceState !== 'recording'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" stroke="none"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-3 0h6"/></svg>
+                <span v-else aria-hidden="true">■</span>
+              </button>
+              <textarea aria-label="输入孩子的回答" :value="inlineAnswer" placeholder="说一说你的想法，或输入回答…" maxlength="200" rows="1" :disabled="answerDisabled || recordingBusy" @input="setInlineAnswer"></textarea>
+            </div>
+            <div v-if="!voiceOpen && (recordingBusy || childAnswerDraft?.source === 'recording')" class="reader-answer-state">
+              <span role="status">{{ voiceState === 'recording' ? '正在录音，点停止后识别' : voiceState === 'starting' ? '正在申请麦克风' : voiceState === 'processing' ? '正在识别' : '请核对转写，修改后再提交' }}</span>
+              <button class="text-button" type="button" @click="cancelOrClearInlineRecording">{{ recordingBusy ? '取消录音' : '清除转写' }}</button>
+            </div>
+            <p v-if="!voiceOpen && voiceError" class="question-error" role="alert">{{ voiceError }}</p>
+            <button class="primary reader-submit-answer" type="submit" :disabled="answerDisabled || recordingBusy || !inlineAnswer.trim()">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M22 2 2.5 9.2a.8.8 0 0 0 .05 1.52L9 13l2.25 6.5a.8.8 0 0 0 1.52.05L22 2ZM10 12.2l7.4-5.6-5.6 7.4-.69 2.1L10 12.2Z"/></svg>
+              {{ interactionBusy ? '正在保存…' : '提交回答' }}
+            </button>
+          </form>
+          <div class="question-secondary">
+            <button class="text-button" type="button" :disabled="!canSkipQuestion || recordingBusy" @click="skipQuestion">跳过本页</button>
+            <button v-if="!session.preview" class="text-button" type="button" :disabled="!mediaAllowed || guidanceLoading || recordingBusy" @click="openStoryQuestion">问问芽芽</button>
+          </div>
+        </section>
+        <section class="side-card parent-tip">
+          <h2><span class="reader-card-icon reader-card-icon--bulb" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 17h8m-7 3h6m-3 2h0M9 17v-2c0-1-4-3-4-7a7 7 0 0 1 14 0c0 4-4 6-4 7v2"/></svg></span> 给家长的共读提示</h2>
+          <p>{{ parentTip }}</p>
+          <span class="reader-foliage" aria-hidden="true"></span>
         </section>
         <section v-if="currentBranches.length" class="side-card branch-card">
           <h2>选一选，故事往哪儿走</h2>
@@ -668,26 +791,10 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
             </button>
           </div>
         </section>
-        <section class="side-card parent-tip">
-          <h2>给家长的共读提示</h2>
-          <p>{{ session.preview ? currentPage?.answer : '孩子回答后，可以选“已理解”或“还没懂”继续聊。回答提到当前页的细节时，追问会围绕这个细节。' }}</p>
-        </section>
-        <section v-if="authenticated && !session.preview" class="side-card child-mode-card">
-          <h2>儿童自主阅读</h2>
-          <p>桌面家长端只负责授权绘本范围、阅读时长和会话交接，不渲染儿童端界面。</p>
-          <button
-            class="secondary"
-            type="button"
-            :disabled="session.status !== 'CREATED' || session.mode !== 'PARENT_CHILD' || turnBusy"
-            @click="openChildMode"
-          >
-            {{ session.mode === 'CHILD_SOLO' ? '此会话已开启儿童模式' : session.status === 'CREATED' ? '设置并进入儿童模式' : '本次阅读已开始，不能切换模式' }}
-          </button>
-        </section>
         <section v-if="storyAnswer" class="side-card">
           <h2>芽芽的回答</h2>
           <p>{{ storyAnswer.outputText }}</p>
-          <button v-if="mediaAllowed && storyAnswer.revision === session.revision && storyAnswer.strategyType !== 'SAFETY_BLOCK'" class="secondary" type="button" @click="playNarration(storyAnswer.interactionEventId)">播放故事回答</button>
+          <button v-if="mediaAllowed && storyAnswer.revision === session.revision && storyAnswer.strategyType !== 'SAFETY_BLOCK'" class="secondary" type="button" :disabled="!canNarratePage" @click="playNarration(storyAnswer.interactionEventId)">播放故事回答</button>
         </section>
         <section v-if="report" class="side-card">
           <h2>本次共读小结</h2>
@@ -708,22 +815,18 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
       </aside>
     </div>
 
-    <div v-if="voiceOpen" class="modal-backdrop" @click.self="closeVoice">
-      <section v-modal-focus="closeVoice" class="modal-card voice-card" role="dialog" aria-modal="true" aria-labelledby="voice-title">
+    <div v-if="voiceOpen" class="modal-backdrop" @click.self="closeStoryQuestion">
+      <section v-modal-focus="closeStoryQuestion" class="modal-card voice-card" role="dialog" aria-modal="true" aria-labelledby="voice-title">
         <div class="modal-head">
-          <div><h2 id="voice-title">{{ asking ? '问问芽芽' : '本页回答' }}</h2><p>{{ book.title }} · 第 {{ currentPage?.pageNumber }} 页</p></div>
-          <button class="modal-close" type="button" aria-label="关闭本页问题" @click="closeVoice">×</button>
-        </div>
-        <div v-if="!asking && currentQuestion" class="answer-card">
-          <strong>正在回答</strong>
-          <p>{{ currentQuestion.outputText }}</p>
+          <div><h2 id="voice-title">问问芽芽</h2><p>{{ book.title }} · 第 {{ currentPage?.pageNumber }} 页</p></div>
+          <button class="modal-close" type="button" aria-label="关闭本页问题" @click="closeStoryQuestion">×</button>
         </div>
         <p v-if="voiceError" class="form-error" role="alert">{{ voiceError }}</p>
         <template v-if="transcript && voiceState !== 'starting'">
           <div class="transcript-box">
             <template v-if="transcript.status === 'draft'">
-              <label for="voice-transcript">{{ transcript.source === 'typed' ? (asking ? '输入问题' : '输入回答') : '待确认的转写' }}</label>
-              <p id="transcript-hint">请核对孩子说的话，确认前可以修改文字。</p>
+              <label for="voice-transcript">{{ transcript.source === 'typed' ? '输入问题' : '待确认的转写' }}</label>
+              <p id="transcript-hint">{{ transcript.source === 'typed' ? '输入文字，或录一段语音。' : '请核对孩子说的话，确认前可以修改文字。' }}</p>
               <textarea id="voice-transcript" ref="transcriptEditor" v-model="transcript.text" aria-describedby="transcript-hint" maxlength="200" rows="3"></textarea>
             </template>
             <template v-else>
@@ -731,13 +834,13 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
               <p>{{ transcript.text }}</p>
             </template>
           </div>
-          <p>{{ asking ? '确认问题后提交，芽芽会根据本页内容回答。' : '确认后将作为本页回答保存；关闭或换页会丢弃尚未提交的内容。' }}</p>
+          <p>确认问题后提交，芽芽会根据本页内容回答。</p>
           <div class="modal-actions">
-            <button class="secondary" type="button" :disabled="interactionBusy" @click="toggleRecording">{{ transcript.source === 'typed' ? '改用录音' : '重新录音' }}</button>
+            <button class="secondary" type="button" :disabled="interactionBusy" @click="toggleRecording">{{ transcript.source === 'typed' ? '开始录音' : '重新录音' }}</button>
             <button v-if="transcript.status === 'draft'" class="primary" type="button" :disabled="!transcript.text.trim()" @click="confirmTranscript">{{ transcript.source === 'typed' ? '确认文字' : '确认转写' }}</button>
             <template v-else>
-              <button class="secondary" type="button" :disabled="interactionBusy" @click="closeVoice">关闭</button>
-              <button class="primary" type="button" :disabled="interactionBusy" @click="submitConfirmedAnswer">{{ interactionBusy ? '正在保存…' : asking ? '提交问题' : '提交回答' }}</button>
+              <button class="secondary" type="button" :disabled="interactionBusy" @click="closeStoryQuestion">关闭</button>
+              <button class="primary" type="button" :disabled="interactionBusy" @click="submitConfirmedAnswer">{{ interactionBusy ? '正在保存…' : '提交问题' }}</button>
             </template>
           </div>
         </template>
@@ -750,7 +853,7 @@ onBeforeUnmount(() => { clearPreparedAudio(); stopNarration(); closeVoice() })
             <p v-if="!voiceError">点击“停止并识别”会上传本段录音，识别结果将在这里显示。取消会丢弃录音。</p>
           </div>
           <button v-if="['idle', 'error', 'unavailable'].includes(voiceState)" class="secondary" type="button" @click="editQuestionText">直接输入文字</button>
-          <button class="secondary" type="button" @click="closeVoice">取消并关闭</button>
+          <button class="secondary" type="button" @click="closeStoryQuestion">取消并关闭</button>
         </template>
       </section>
     </div>
