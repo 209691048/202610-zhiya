@@ -7,6 +7,7 @@ const props = defineProps({
   tokens: { type: Array, default: () => [] },
   mode: { type: String, default: 'demo' },
   disabled: { type: Boolean, default: false },
+  checkExpiry: { type: Function, default: () => false },
 })
 const emit = defineEmits(['highlight', 'media-error', 'before-play'])
 
@@ -17,13 +18,14 @@ const highlightIndex = computed(() => {
   return Math.min(props.tokens.length - 1, Math.floor(audio.progress.value * props.tokens.length))
 })
 watch(highlightIndex, (index) => emit('highlight', index))
-watch(() => props.src, () => {
-  audio.stop()
+watch(() => props.src, (src) => {
+  if (props.mode === 'live') audio.prepare(src)
+  else audio.stop()
   emit('highlight', -1)
 })
 
 async function toggle() {
-  if (props.disabled) return
+  if (props.disabled || props.checkExpiry()) return
   if (!audio.playing.value) emit('before-play')
   if (audio.activeSource.value === 'page') {
     audio.togglePause()

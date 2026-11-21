@@ -80,6 +80,44 @@ test('STARTED and PAGE_CHANGED update revision and current page', async () => {
   assert.equal(api.calls[2][2].clientEventId, 'page-fixed')
 })
 
+test('a page turn supersedes a slow INITIAL and discards its late result', async () => {
+  let reply
+  const api = fakeApi({ submitGuidance: () => new Promise(resolve => { reply = resolve }) })
+  const machine = new ReadingSessionMachine({ api })
+  await machine.create({ childProfileId: 101, storyVersionId: 301 })
+  await machine.start()
+  const pending = machine.guidance('INITIAL')
+  await machine.changePage(2)
+  reply({ data: { interactionEventId: 901, revision: 2, outputText: '旧页问题' } })
+  await pending
+  assert.equal(machine.session.currentPage, 2)
+  assert.equal(machine.session.revision, 2)
+  assert.equal(machine.events.some(event => event.interactionEventId === 901), false)
+})
+
+test('a story branch supersedes slow INITIAL without adopting its late result', async () => {
+  let reply
+  const api = fakeApi({
+    submitGuidance: () => new Promise(resolve => { reply = resolve }),
+    async chooseBranch(sessionId, payload) {
+      assert.equal(sessionId, 401)
+      assert.equal(payload.expectedRevision, 1)
+      assert.equal(payload.branchId, 17)
+      return { data: { currentPage: 4, visitedPageNumbers: [1, 4], revision: 2 } }
+    },
+  })
+  const machine = new ReadingSessionMachine({ api })
+  await machine.create({ childProfileId: 101, storyVersionId: 301 })
+  await machine.start()
+  const pending = machine.guidance('INITIAL')
+  await machine.chooseBranch(17)
+  reply({ data: { interactionEventId: 901, revision: 2, outputText: '旧页问题' } })
+  await pending
+  assert.equal(machine.session.currentPage, 4)
+  assert.equal(machine.session.revision, 2)
+  assert.equal(machine.events.some(event => event.interactionEventId === 901), false)
+})
+
 test('SESSION_CONFLICT reloads the latest session before reporting the conflict', async () => {
   const api = fakeApi({
     async addEvent() {

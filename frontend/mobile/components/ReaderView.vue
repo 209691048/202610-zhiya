@@ -50,6 +50,10 @@ const answerAudioUrl = ref('')
 const answerAudioLoading = ref(false)
 const answerAudioNotice = ref('')
 const pendingFeedback = ref(null)
+const foregroundBusy = ref(false)
+const childAuthorizationExpired = ref(false)
+let autoQuestionPage = ''
+let answerAudioEventId = null
 const answerAudio = useAudioController((url) => {
   if (answerAudioUrl.value === url) {
     answerAudioUrl.value = ''
@@ -83,10 +87,23 @@ const nextPageNumber = computed(() => {
 const isLastPage = computed(() => !reviewing.value && !branchChoices.value.length && nextPageNumber.value == null)
 const isFinished = computed(() => session.state.session?.status === 'FINISHED')
 const pending = computed(() => session.state.pending || Boolean(pendingFeedback.value) || session.loading.value)
-const canSkip = computed(() => !session.state.syncRequired && (pendingFeedback.value === 'INITIAL' ||
+const navigationPending = computed(() => foregroundBusy.value || (pending.value && pendingFeedback.value !== 'INITIAL'))
+const canSkip = computed(() => !foregroundBusy.value && !session.state.syncRequired && (pendingFeedback.value === 'INITIAL' ||
   (!pending.value && interactionResult.value?.strategyType !== 'SKIP' && interactionResult.value?.feedback !== 'SKIPPED')))
 const revision = computed(() => session.state.session?.revision ?? 0)
 const sessionId = computed(() => session.state.session?.readingSessionId ?? null)
+const childDeadline = computed(() => {
+  const current = session.state.session
+  if (props.mode !== 'live' || current?.mode !== 'CHILD_SOLO') return null
+  const deadline = Date.parse(current.expiresAt)
+  return Number.isFinite(deadline) ? deadline : null
+})
+watch(childDeadline, (deadline, _previous, onCleanup) => {
+  childAuthorizationExpired.value = false
+  if (deadline === null || checkChildAuthorization()) return
+  const timer = setTimeout(checkChildAuthorization, deadline - Date.now())
+  onCleanup(() => clearTimeout(timer))
+}, { immediate: true, flush: 'sync' })
 watch(sessionId, (id) => { if (props.mode === 'live' && id) emit('session', id) })
 const errorMessage = computed(() => session.error.value?.message ?? session.error.value ?? '')
 const creationUnconfirmed = computed(() => !props.initialSessionId && !session.state.session && session.error.value?.code === 'REQUEST_OUTCOME_UNKNOWN')
@@ -97,9 +114,17 @@ watch(currentPageNumber, () => {
   restorePageQuestion()
 })
 watch(() => session.state.events, () => restorePageQuestion())
-watch(revision, () => {
-  if (props.mode === 'live') resetAudio()
-})
+const activePageKey = computed(() => props.mode === 'live' && !childAuthorizationExpired.value && !reviewing.value && !session.state.syncRequired
+  && session.state.session?.status === 'IN_PROGRESS' ? `${sessionId.value}:${currentPageNumber.value}` : '')
+watch(activePageKey, (key) => {
+  if (key && !pageAudioSrc.value) void loadPageAudio(true)
+  else if (!key) resetAudio()
+}, { immediate: true, flush: 'post' })
+watch([activePageKey, pending, interactionResult], ([key, busy, question]) => {
+  if (!key || busy || question || autoQuestionPage === key) return
+  autoQuestionPage = key
+  void submitFeedback('INITIAL', { background: true })
+}, { immediate: true, flush: 'post' })
 watch(() => session.state.session?.currentPage, (page) => {
   if (page != null) currentPageNumber.value = page
 })
@@ -152,8 +177,20 @@ function resetAudio() {
   cancelPageAudioRequest()
   stopAnswerAudio()
   answerAudioUrl.value = ''
+  answerAudioEventId = null
   answerAudioNotice.value = ''
   pageAudioSrc.value = props.mode === 'demo' ? (currentPage.value?.audio ?? '') : ''
+}
+
+function checkChildAuthorization() {
+  if (childDeadline.value === null || Date.now() < childDeadline.value) return false
+  if (!childAuthorizationExpired.value) {
+    childAuthorizationExpired.value = true
+    pagePlayer.value?.stop()
+    resetAudio()
+    showAnswerDialog.value = false
+  }
+  return true
 }
 
 function resetInteractionForPage() {
@@ -198,7 +235,7 @@ async function retryStart() {
 }
 
 async function goNext() {
-  if (pending.value || !session.state.session || branchChoices.value.length) return
+  if (navigationPending.value || !session.state.session || branchChoices.value.length) return
   answerAudio.stop()
   if (isLastPage.value) {
     await finishReading()
@@ -210,50 +247,59 @@ async function goNext() {
     currentPageNumber.value = next
     return
   }
+  foregroundBusy.value = true
   try {
     await session.changePage(next)
     currentPageNumber.value = session.state.session.currentPage
   } catch {
     // Conflict recovery is reported through `session.notice`.
+  } finally {
+    foregroundBusy.value = false
   }
 }
 
 async function chooseBranch(branchId) {
-  if (pending.value || session.state.syncRequired || !branchChoices.value.some(branch => branch.branchId === branchId)) return
+  if (navigationPending.value || session.state.syncRequired || !branchChoices.value.some(branch => branch.branchId === branchId)) return
   answerAudio.stop()
+  foregroundBusy.value = true
   try {
     await session.chooseBranch(branchId)
   } catch {
     // Keep the same session and show its authoritative progress or error.
+  } finally {
+    foregroundBusy.value = false
   }
 }
 
 function goPrevious() {
   const index = visited.value.indexOf(currentPageNumber.value)
-  if (pending.value || index <= 0) return
+  if (navigationPending.value || index <= 0) return
   answerAudio.stop()
   currentPageNumber.value = visited.value[index - 1]
 }
 
 async function finishReading() {
-  if (pending.value) return
+  if (navigationPending.value) return
   answerAudio.stop()
+  foregroundBusy.value = true
   try {
     await session.finish()
     emit('finished', { book: props.book, session: session.state.session, report: session.state.report })
   } catch {
     // Error is rendered from the composable state.
+  } finally {
+    foregroundBusy.value = false
   }
 }
 
-async function submitFeedback(feedback) {
+async function submitFeedback(feedback, { background = false } = {}) {
   if (!session.state.session || reviewing.value || session.state.syncRequired) return
   if (feedback === 'SKIPPED' ? !canSkip.value : pending.value) return
   pendingFeedback.value = feedback
   const page = currentPageNumber.value
   const generation = ++requestGeneration
   try {
-    const result = await session.guidance(feedback)
+    const result = await session.guidance(feedback, { background })
     if (generation !== requestGeneration || page !== currentPageNumber.value) return
     interactionResult.value = result
     return result
@@ -265,6 +311,7 @@ async function submitFeedback(feedback) {
 }
 
 async function openAnswerDialog(question = false) {
+  if (pageAudioLoading.value) cancelPageAudioRequest()
   asking.value = question
   if (!question && !interactionResult.value) {
     const result = await submitFeedback('INITIAL')
@@ -296,12 +343,15 @@ async function handleAnswerConfirmed({ text }) {
 }
 
 async function askShortQuestion(text) {
-  if (pending.value || reviewing.value || session.state.syncRequired) return
+  if (navigationPending.value || reviewing.value || session.state.syncRequired) return
+  if (pageAudioLoading.value) cancelPageAudioRequest()
+  foregroundBusy.value = true
   try { await session.askQuestion(text) } catch { /* Error and reconciliation appear in the reader. */ }
+  finally { foregroundBusy.value = false }
 }
 
-async function loadPageAudio() {
-  if (!session.state.session || pageAudioLoading.value || showAnswerDialog.value) return
+async function loadPageAudio(silent = false) {
+  if (checkChildAuthorization() || !activePageKey.value || pageAudioLoading.value || showAnswerDialog.value) return
   const page = currentPageNumber.value
   const controller = new AbortController()
   pageAudioRequest = controller
@@ -313,7 +363,7 @@ async function loadPageAudio() {
       revision: revision.value,
       signal: controller.signal,
     })
-    if (controller.signal.aborted || page !== currentPageNumber.value) return
+    if (controller.signal.aborted || page !== currentPageNumber.value || checkChildAuthorization()) return
     const { audioUrl, expiresAt } = response.data
     pageAudioSrc.value = audioUrl
     answerAudioNotice.value = ''
@@ -324,7 +374,7 @@ async function loadPageAudio() {
       else pageAudioExpiryTimer = setTimeout(() => discardPageAudio(audioUrl), remaining)
     }
   } catch (error) {
-    if (!controller.signal.aborted && page === currentPageNumber.value) {
+    if (!silent && !controller.signal.aborted && page === currentPageNumber.value) {
       answerAudioNotice.value = error?.message ?? '页面朗读音频准备失败'
     }
   } finally {
@@ -343,14 +393,16 @@ function discardPageAudio(url) {
 }
 
 async function playAnswerAudio(result = interactionResult.value) {
-  if (showAnswerDialog.value || !result?.outputText || result.strategyType === 'SAFETY_BLOCK') return
+  if (checkChildAuthorization() || showAnswerDialog.value || !result?.outputText || result.strategyType === 'SAFETY_BLOCK') return
   answerAudioNotice.value = ''
   if (props.mode === 'demo') {
     answerAudioNotice.value = '演示模式没有回答音频；实机模式将在 G10 返回 interactionEventId 后请求 API-023。'
     return
   }
   const eventId = result.interactionEventId
-  if (!eventId || answerAudioLoading.value || result.revision !== revision.value) {
+  const matches = () => result.eventType === 'ASK'
+    ? storyAnswer.value?.interactionEventId === eventId : result.revision === revision.value
+  if (!eventId || answerAudioLoading.value || !matches()) {
     answerAudioNotice.value = '当前结果没有可用的 interactionEventId，无法请求回答音频。'
     return
   }
@@ -361,13 +413,17 @@ async function playAnswerAudio(result = interactionResult.value) {
   answerAudioRequest = controller
   answerAudioLoading.value = true
   try {
-    if (!answerAudioUrl.value || Date.now() >= answerAudioExpiresAt) {
+    if (!answerAudioUrl.value || eventId !== answerAudioEventId || Date.now() >= answerAudioExpiresAt) {
       const response = await props.voiceApi.synthesizeInteraction({ interactionEventId: eventId, signal: controller.signal })
-      if (controller.signal.aborted || generation !== pageRequestGeneration || page !== currentPageNumber.value || result.revision !== revision.value) return
+      if (controller.signal.aborted || generation !== pageRequestGeneration || page !== currentPageNumber.value
+        || !matches() || checkChildAuthorization()) return
       answerAudioUrl.value = response.data.audioUrl
+      answerAudioEventId = eventId
       answerAudioExpiresAt = Date.parse(response.data.expiresAt)
     }
-    await answerAudio.play({ url: answerAudioUrl.value, source: 'answer' })
+    if (!await answerAudio.play({ url: answerAudioUrl.value, source: 'answer' }) && !controller.signal.aborted) {
+      answerAudioNotice.value = answerAudio.error.value
+    }
   } catch (error) {
     if (!controller.signal.aborted && generation === pageRequestGeneration && page === currentPageNumber.value) {
       answerAudioNotice.value = error?.message ?? '回答音频准备失败'
@@ -380,7 +436,7 @@ async function playAnswerAudio(result = interactionResult.value) {
   }
 }
 
-watch(() => interactionResult.value?.interactionEventId, () => {
+watch([() => interactionResult.value?.interactionEventId, () => storyAnswer.value?.interactionEventId], () => {
   stopAnswerAudio()
   answerAudioUrl.value = ''
 })
@@ -410,7 +466,11 @@ function exitReading() {
     </div>
 
     <main v-if="session.state.session" class="reader-content">
-      <section v-if="session.state.syncRequired" class="reader-error-card">
+      <section v-if="childAuthorizationExpired" class="reader-error-card">
+        <p role="alert">本次儿童阅读授权已到期，请交还家长。</p>
+        <button type="button" class="button button-ghost" @click="exitReading">返回</button>
+      </section>
+      <section v-else-if="session.state.syncRequired" class="reader-error-card">
         <p>上次操作的结果仍待核对。{{ errorMessage }}</p>
         <button type="button" class="button button-primary" :disabled="pending" @click="syncReading">重新核对进度</button>
         <p>若服务器尚未记录上次操作，将用同一事件编号重试。</p>
@@ -448,7 +508,7 @@ function exitReading() {
               class="button button-ghost button-small page-audio-request"
               type="button"
               :disabled="pageAudioLoading || showAnswerDialog"
-              @click="loadPageAudio"
+              @click="loadPageAudio()"
             >
               {{ pageAudioLoading ? '音频准备中…' : '准备本页朗读音频' }}
             </button>
@@ -456,6 +516,7 @@ function exitReading() {
               ref="pagePlayer"
               :src="pageAudioSrc"
               :disabled="showAnswerDialog"
+              :check-expiry="checkChildAuthorization"
               :tokens="currentPage.tokens"
               :mode="mode"
               @media-error="discardPageAudio"
@@ -485,11 +546,11 @@ function exitReading() {
         <section v-if="mode === 'live' && !reviewing" class="interaction-card">
           <h2>问问芽芽</h2>
           <template v-if="session.state.session.mode === 'CHILD_SOLO'">
-            <button v-for="question in ['这一页发生了什么？', '故事里有谁？']" :key="question" type="button" class="button button-soft" :disabled="pending || session.state.syncRequired" @click="askShortQuestion(question)">{{ question }}</button>
+            <button v-for="question in ['这一页发生了什么？', '故事里有谁？']" :key="question" type="button" class="button button-soft" :disabled="navigationPending || session.state.syncRequired" @click="askShortQuestion(question)">{{ question }}</button>
           </template>
           <button v-else class="button button-soft" type="button" :disabled="pending || session.state.syncRequired" @click="openAnswerDialog(true)">提出本页问题</button>
           <p v-if="storyAnswer">{{ storyAnswer.outputText }}</p>
-          <button v-if="storyAnswer && storyAnswer.revision === revision && storyAnswer.strategyType !== 'SAFETY_BLOCK'" class="button button-ghost" type="button" :disabled="pending || answerAudioLoading" @click="playAnswerAudio(storyAnswer)">播放故事回答</button>
+          <button v-if="storyAnswer?.interactionEventId && storyAnswer.strategyType !== 'SAFETY_BLOCK'" class="button button-ghost" type="button" :disabled="answerAudioLoading" @click="playAnswerAudio(storyAnswer)">{{ answerAudioLoading ? '回答音频准备中…' : '播放芽芽的回答' }}</button>
         </section>
 
         <p v-if="lastAnswerText" class="answer-confirmation">
@@ -502,12 +563,12 @@ function exitReading() {
         <section v-if="branchChoices.length" class="interaction-card" aria-labelledby="mobile-branch-title">
           <h2 id="mobile-branch-title">选择接下来的故事</h2>
           <button v-for="branch in branchChoices" :key="branch.branchId" class="button button-soft" type="button"
-            :disabled="pending || session.state.syncRequired" @click="chooseBranch(branch.branchId)">{{ branch.choiceLabel }}</button>
+            :disabled="navigationPending || session.state.syncRequired" @click="chooseBranch(branch.branchId)">{{ branch.choiceLabel }}</button>
         </section>
         <nav class="page-navigation" aria-label="翻页">
-          <button class="button button-ghost" type="button" :disabled="pending || visited.indexOf(currentPageNumber) <= 0" @click="goPrevious">上一页</button>
-          <button v-if="!branchChoices.length" class="button button-primary" type="button" :disabled="pending" @click="goNext">
-            {{ pending ? '同步中…' : (isLastPage ? '完成阅读' : '下一页 →') }}
+          <button class="button button-ghost" type="button" :disabled="navigationPending || visited.indexOf(currentPageNumber) <= 0" @click="goPrevious">上一页</button>
+          <button v-if="!branchChoices.length" class="button button-primary" type="button" :disabled="navigationPending" @click="goNext">
+            {{ navigationPending ? '同步中…' : (isLastPage ? '完成阅读' : '下一页 →') }}
           </button>
         </nav>
       </template>
