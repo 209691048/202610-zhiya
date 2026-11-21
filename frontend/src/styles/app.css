@@ -1160,7 +1160,7 @@
       box-shadow: var(--shadow-md);
     }
     .flipbook-stage {
-      padding: clamp(12px, 1.2vw, 20px) clamp(28px, 3.5vw, 62px) 37px;
+      padding: clamp(12px, 1.2vw, 20px) clamp(28px, 3.5vw, 62px);
       border: 2px solid #fffcf5;
       border-radius: 26px;
       background: linear-gradient(170deg, #fffdf8, #f8ede0 52%, #fffdf8);
@@ -1194,22 +1194,6 @@
       border-radius: 13px;
       overflow: hidden;
       filter: drop-shadow(0 12px 18px rgba(71, 45, 25, .14));
-    }
-    .flip-hint {
-      width: fit-content;
-      position: relative;
-      z-index: 2;
-      margin: -47px auto 0;
-      padding: 9px 19px;
-      border: 1px solid #f2d8a4;
-      border-radius: 999px;
-      color: var(--leaf-deep);
-      background: #fff8e7;
-      box-shadow: 0 4px 8px #82542f12;
-      font-size: clamp(12px, 1vw, 16px);
-      font-weight: 700;
-      line-height: 22px;
-      text-align: center;
     }
     .flip-page {
       overflow: hidden;
@@ -1317,6 +1301,7 @@
     .page-dots i { width: 6px; height: 6px; border-radius: 50%; background: #dedbd2; }
     .page-dots i.active { background: var(--leaf); }
     .reader-side { display: grid; gap: clamp(12px, 1.1vw, 18px); padding-top: 38px; min-width: 0; }
+    .reader-summary { scroll-margin-top: calc(var(--header-h) + 12px); }
     .side-card { min-width: 0; padding: clamp(15px, 1.6vw, 26px); border: 1px solid var(--reader-border); border-radius: 25px; background: linear-gradient(130deg, #fffdf8, #fbf4eb); box-shadow: var(--reader-shadow); }
     .side-card h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; color: #55321b; font-size: clamp(16px, 1.3vw, 22px); line-height: 1.3; }
     .reader-card-icon { display: grid; flex: 0 0 auto; place-items: center; width: 30px; height: 30px; border-radius: 10px; }
@@ -1352,6 +1337,17 @@
     .narration-status { margin: 10px 0 0; color: var(--leaf-deep); font-size: 12px; line-height: 18px; }
     .question-card p { margin: 0; overflow-wrap: anywhere; color: #183a42; font-size: clamp(18px, 1.55vw, 26px); font-weight: 600; line-height: 1.5; }
     .question-card p.question-saved { margin-top: 10px; color: var(--leaf); font-family: inherit; font-size: 11px; line-height: 18px; }
+    .question-card p.question-reply {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-inline-start: 3px solid var(--leaf);
+      border-radius: 10px;
+      background: #eef4e8;
+      color: var(--leaf-deep);
+      font-size: clamp(15px, 1.1vw, 17px);
+      font-weight: 500;
+      line-height: 1.6;
+    }
     .question-card p.question-error { margin-top: 10px; color: var(--danger); font-family: inherit; font-size: 10px; line-height: 18px; }
     .question-retry { margin-top: 9px; padding: 0; font-size: 10px; }
     .question-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
