@@ -122,11 +122,13 @@
 
 两组数字画成图更直观。下面两张取自 11 月 21 日答辩 PPT，统计口径是仓库 main 分支的提交与已合并 PR。
 
-<p style="text-align:center;"><img src="妈妈夸我说的队-Alpha冲刺-图源/progress/actual-progress.jpg" alt="图2 累计提交与合并 PR" width="800" style="width:800px;max-width:100%;"></p>
+<p style="text-align:center;"><img src="assets/actual-progress.jpg
+" alt="图2 累计提交与合并 PR" width="800" style="width:800px;max-width:100%;"></p>
 
 *图2　实际进度：11 月 8 日设计收口后提交开始爬升，11 月 17 日进入合并高峰，11 月 20 日单日合并 20 个 PR。*
 
-<p style="text-align:center;"><img src="妈妈夸我说的队-Alpha冲刺-图源/progress/burndown.jpg" alt="图3 燃尽图" width="800" style="width:800px;max-width:100%;"></p>
+<p style="text-align:center;"><img src="assets/burndown.jpg
+" alt="图3 燃尽图" width="800" style="width:800px;max-width:100%;"></p>
 
 *图3　燃尽图：基线 52 个工作项（46 个冲刺期合并 PR + 6 项收尾），11 月 20 日剩 8 项，11 月 21 日剩 6 项，11 月 25 日收口。*
 
