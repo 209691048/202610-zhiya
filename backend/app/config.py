@@ -9,7 +9,15 @@ import httpx
 
 
 DASHSCOPE_CHAT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
+DASHSCOPE_TEXT_MODEL = "qwen3.6-plus"
+DEEPSEEK_TEXT_MODEL = "deepseek-flash"
+
+
+def is_deepseek_endpoint(url: str) -> bool:
+    try:
+        return urlsplit(url).hostname == "api.deepseek.com"
+    except ValueError:
+        return False  # Invalid URLs are rejected by validate_url.
 
 
 def validate_url(value: str, name: str) -> None:
@@ -46,9 +54,9 @@ def validate_text(value: str, name: str) -> None:
 
 @dataclass(frozen=True)
 class Settings:
-    model_api_url: str = field(default=DEEPSEEK_CHAT_URL, repr=False)
+    model_api_url: str = field(default=DASHSCOPE_CHAT_URL, repr=False)
     model_api_key: str = field(default="", repr=False)
-    model_name: str = "deepseek-flash"
+    model_name: str = DASHSCOPE_TEXT_MODEL
     model_timeout_seconds: float = 20.0
     model_max_tokens: int = 512
     model_send_thinking: bool = True
@@ -72,10 +80,14 @@ class Settings:
         send_thinking = os.getenv("MODEL_SEND_THINKING", "true").strip().lower()
         if send_thinking not in ("true", "false"):
             raise ValueError("MODEL_SEND_THINKING must be true or false")
+        key = os.getenv("MODEL_API_KEY", "")
+        # A key from an older deployment must not follow the new default endpoint.
+        url = os.getenv("MODEL_API_URL", "" if key else DASHSCOPE_CHAT_URL)
+        default_model = DEEPSEEK_TEXT_MODEL if is_deepseek_endpoint(url) else DASHSCOPE_TEXT_MODEL
         return cls(
-            model_api_url=os.getenv("MODEL_API_URL", DEEPSEEK_CHAT_URL),
-            model_api_key=os.getenv("MODEL_API_KEY", ""),
-            model_name=os.getenv("MODEL_NAME", "deepseek-flash").strip(),
+            model_api_url=url,
+            model_api_key=key,
+            model_name=os.getenv("MODEL_NAME", default_model).strip(),
             model_timeout_seconds=timeout,
             model_max_tokens=max_tokens,
             model_send_thinking=send_thinking == "true",
